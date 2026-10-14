@@ -31,6 +31,8 @@ python -m data_pipeline.imdb load --min-votes 5000 # фильмы, люди, ж�
 python -m data_pipeline.movielens download ml-latest-small  # оценки для опытов (1 МБ)
 python -m data_pipeline.movielens download ml-32m           # оценки для итоговых замеров (239 МБ)
 python -m data_pipeline.movielens link ml-latest-small      # сколько фильмов и оценок связалось с IMDb
+python -m data_pipeline.tmdb enrich                         # страна, язык, описание, постер из TMDB (~15 мин)
 ```
 
+Ответы TMDB кэшируются в таблице `api_cache`: повторный запуск не обращается к API.
 Данные IMDb и MovieLens используются только в некоммерческих целях и в репозиторий не попадают.
