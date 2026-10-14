@@ -22,3 +22,12 @@ source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # и вписать ключи
 ```
+
+## Данные
+
+```bash
+python -m data_pipeline.imdb download              # датасеты IMDb в data/raw/ (~1,9 ГБ)
+python -m data_pipeline.imdb load --min-votes 5000 # фильмы, люди, жанры в data/movies.db
+```
+
+Данные IMDb используются только в некоммерческих целях и в репозиторий не попадают.
