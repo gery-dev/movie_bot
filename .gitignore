@@ -1,0 +1,18 @@
+# Секреты
+.env
+
+# Окружение
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Данные и БД (большие, скачиваются скриптами)
+data/
+*.db
+*.sqlite
+
+# Системное
+.DS_Store
