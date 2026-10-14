@@ -38,4 +38,14 @@ python -m data_pipeline.tmdb enrich                         # страна, яз
 
 Анализ данных: `python notebooks/eda.py` строит графики в `reports/figures/`, выводы — в [reports/eda.md](reports/eda.md).
 
+## Модели
+
+```bash
+python -m recsys.features embeddings     # эмбеддинги описаний всех фильмов (один раз, ~5 мин)
+python -m recsys.evaluate ml-latest-small # сравнение моделей на MovieLens
+pytest                                   # тесты метрик и разбиения
+```
+
+Результаты: [reports/metrics_ml-latest-small.md](reports/metrics_ml-latest-small.md).
+
 Данные IMDb и MovieLens используются только в некоммерческих целях и в репозиторий не попадают.

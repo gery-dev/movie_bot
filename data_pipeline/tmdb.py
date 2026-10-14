@@ -83,6 +83,11 @@ class TMDB:
             append_to_response="videos,watch/providers", include_video_language="ru,en",
         )
 
+    async def overview_en(self, tmdb_id: int) -> str | None:
+        """Описание на английском — для фильмов, у которых нет русского."""
+        data = await self.get(f"/movie/{tmdb_id}", shrink=lambda m: {"overview": m.get("overview")}, language="en-US")
+        return data.get("overview") or None
+
 
 def shrink_movie(movie: dict) -> dict:
     # сервисы просмотра TMDB отдаёт сразу для всех стран (~85 КБ на фильм): оставляем Россию,
