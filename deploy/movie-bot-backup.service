@@ -1,0 +1,9 @@
+# Резервная копия БД (запускается таймером movie-bot-backup.timer).
+[Unit]
+Description=Movie bot database backup
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/venv/bin/python -m db.backup

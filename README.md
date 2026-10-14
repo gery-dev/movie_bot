@@ -87,6 +87,25 @@ python -m bot   # нужны TELEGRAM_BOT_TOKEN и TMDB_API_KEY в .env и за�
 Интервалы вопроса «посмотрел?» задаются в `.env` в минутах: `FEEDBACK_DELAY_MIN` (по умолчанию сутки после подборки),
 `FEEDBACK_ASK_GAP_MIN` (не чаще раза в 6 часов), `FEEDBACK_IGNORE_AFTER_MIN` (через неделю без ответа — «проигнорировано»).
 
+## Развёртывание на сервер
+
+Ubuntu/Debian с sudo. С Mac, из папки проекта (перед первым разом остановить бота на Mac — один токен, один бот):
+
+```bash
+SSH_KEY=~/.ssh/ключ ./deploy/deploy.sh user@host --first   # первый раз: код, БД без пользователей, эмбеддинги, .env
+SSH_KEY=~/.ssh/ключ ./deploy/deploy.sh user@host           # обновление кода, данные на сервере не трогаются
+```
+
+На сервере бот работает службой `movie-bot` (перезапуск при сбое), копия БД — таймер `movie-bot-backup`
+каждый день в 04:00, хранятся 14 последних (`data/backups/`). Библиотеки для сервера — `requirements-bot.txt`.
+
+```bash
+sudo systemctl status movie-bot                 # состояние
+journalctl -u movie-bot -f                      # журнал
+python -m db.backup                             # копия вручную (с проверкой)
+python -m db.backup --restore data/backups/<файл>.db.gz   # восстановление, бот остановлен
+```
+
 ## Тестирование
 
 ```bash

@@ -1,0 +1,9 @@
+# Только то, что нужно работающему боту (сервер). Эксперименты (SVD, графики) — requirements.txt.
+aiogram==3.31.0
+pandas==3.0.6
+numpy==2.5.4
+scikit-learn==1.9.1
+implicit==0.7.3
+sentence-transformers==6.1.0
+httpx==0.28.1
+python-dotenv==1.2.4

@@ -1,0 +1,10 @@
+# Каждый день в 04:00; если сервер был выключен — сразу после включения.
+[Unit]
+Description=Daily movie bot database backup
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,17 @@
+# Служба бота: запуск при старте сервера, перезапуск при любом падении (ТЗ п. 4.4).
+# __USER__ и __DIR__ подставляет deploy/setup_server.sh.
+[Unit]
+Description=Movie recommendation Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/venv/bin/python -u -m bot
+Environment=OPENBLAS_NUM_THREADS=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
