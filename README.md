@@ -35,4 +35,7 @@ python -m data_pipeline.tmdb enrich                         # страна, яз
 ```
 
 Ответы TMDB кэшируются в таблице `api_cache`: повторный запуск не обращается к API.
+
+Анализ данных: `python notebooks/eda.py` строит графики в `reports/figures/`, выводы — в [reports/eda.md](reports/eda.md).
+
 Данные IMDb и MovieLens используются только в некоммерческих целях и в репозиторий не попадают.
