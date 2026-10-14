@@ -26,8 +26,10 @@ SIGNALS = {
     "later": 0.1,
     "seen": 0.0,
     "skip": 0.0,
-    "review": 0.0,  # текстовый отзыв; его тональность учтём на этапе 5
+    "review": 0.0,  # сам факт отзыва вкус не меняет — меняет его тональность (SENTIMENT_WEIGHT)
 }
+# тональность отзыва (−1…+1) — добавка к оценке: 5★ дают +1, восторженный отзыв ещё +0,25
+SENTIMENT_WEIGHT = 0.25
 REACTION_LISTS = {"seen": "seen", "later": "planned"}  # реакция → список пользователя
 
 
@@ -101,13 +103,14 @@ def record_rating(conn, user_id: int, tconst: str, rating: int, source: str = "r
     set_list(conn, user_id, tconst, "seen")
 
 
-def record_reaction(conn, user_id: int, tconst: str, reaction: str, review: str | None = None) -> None:
+def record_reaction(conn, user_id: int, tconst: str, reaction: str, review: str | None = None,
+                    sentiment: float | None = None) -> None:
     if reaction not in SIGNALS:
         raise ValueError(f"неизвестная реакция: {reaction}")
     ensure_user(conn, user_id)
     conn.execute(
-        "INSERT INTO reactions (user_id, tconst, reaction, review) VALUES (?, ?, ?, ?)",
-        (user_id, tconst, reaction, review),
+        "INSERT INTO reactions (user_id, tconst, reaction, review, sentiment) VALUES (?, ?, ?, ?, ?)",
+        (user_id, tconst, reaction, review, sentiment),
     )
     if reaction in REACTION_LISTS:
         set_list(conn, user_id, tconst, REACTION_LISTS[reaction])
@@ -133,15 +136,18 @@ def excluded_films(conn, user_id: int) -> set[str]:
 
 
 def user_events(conn, user_id: int) -> list[tuple[str, float, float]]:
-    """Оценки и реакции пользователя как сигналы. Реакции на фильм, который потом оценён, не учитываются."""
+    """Оценки и реакции пользователя как сигналы. Реакции на фильм, который потом оценён, не учитываются;
+    исключение — тональность отзыва: она уточняет оценку."""
     rated = conn.execute("SELECT tconst, rating, created_at FROM ratings WHERE user_id = ?", (user_id,)).fetchall()
     center = np.mean([r for _, r, _ in rated]) if len(rated) >= MIN_RATINGS_FOR_MEAN else CENTER
     events = [(t, rating_signal(r, center), _ts(c)) for t, r, c in rated]
     rated_ids = {t for t, _, _ in rated}
-    for t, reaction, c in conn.execute(
-        "SELECT tconst, reaction, created_at FROM reactions WHERE user_id = ?", (user_id,)
+    for t, reaction, c, sent in conn.execute(
+        "SELECT tconst, reaction, created_at, sentiment FROM reactions WHERE user_id = ?", (user_id,)
     ):
-        if t not in rated_ids:
+        if reaction == "review" and sent is not None:
+            events.append((t, SENTIMENT_WEIGHT * sent, _ts(c)))
+        elif t not in rated_ids:
             events.append((t, SIGNALS[reaction], _ts(c)))
     return events
 

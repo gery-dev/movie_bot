@@ -21,3 +21,7 @@ class Review(StatesGroup):
 
 class FavoriteSearch(StatesGroup):
     query = State()
+
+
+class LetterboxdImport(StatesGroup):
+    file = State()

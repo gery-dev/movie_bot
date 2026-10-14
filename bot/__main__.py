@@ -11,7 +11,7 @@ from aiogram.types import BotCommand
 from dotenv import load_dotenv
 
 from bot.feedback import feedback_loop
-from bot.handlers import common, lists, onboarding, recommend
+from bot.handlers import common, imports, lists, onboarding, recommend, together
 from bot.services import App
 from db.database import ROOT
 from recsys.today import extend_daily
@@ -21,6 +21,8 @@ COMMANDS = [
     BotCommand(command="today", description="Подборка под настроение"),
     BotCommand(command="lists", description="Видел / в планах / скрыто"),
     BotCommand(command="favorites", description="Любимые актёры и режиссёры"),
+    BotCommand(command="together", description="Кино на компанию"),
+    BotCommand(command="import", description="Перенести оценки из Letterboxd"),
     BotCommand(command="restart", description="Пройти знакомство заново"),
     BotCommand(command="help", description="Справка"),
 ]
@@ -62,7 +64,8 @@ async def main() -> None:
         return await handler(event, data)
 
     # порядок важен: обработчики шагов знакомства раньше общих, «всё остальное» — последним
-    dp.include_routers(onboarding.router, recommend.router, lists.router, common.router)
+    # together раньше onboarding: вход по ссылке-приглашению — это тоже /start, но с параметром
+    dp.include_routers(together.router, onboarding.router, recommend.router, lists.router, imports.router, common.router)
     await bot.set_my_commands(COMMANDS)
 
     feedback = asyncio.create_task(feedback_loop(bot, app))

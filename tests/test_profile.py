@@ -7,6 +7,7 @@ import pytest
 
 from db.database import connect
 from recsys import calibration
+from recsys.explain import explain
 from recsys.favorites import add_favorite, person_unseen, suggest_favorites
 from recsys.profile import (DAY, Profiler, decay, excluded_films, rating_signal, rebuild_profile, record_rating,
                             record_reaction, load_profile, user_events)
@@ -114,6 +115,16 @@ def test_rating_replaces_earlier_reaction(conn):
     assert [e[0] for e in user_events(conn, USER)] == ["tt06"]
 
 
+def test_review_tone_refines_rating(conn, profiler):
+    record_rating(conn, USER, "tt05", 4)
+    base = weight(profiler, rebuild_profile(conn, profiler, USER), "genre:Romance")
+    record_reaction(conn, USER, "tt05", "review", review="обожаю", sentiment=0.9)
+    loved = weight(profiler, rebuild_profile(conn, profiler, USER), "genre:Romance")
+    assert loved > base
+    record_reaction(conn, USER, "tt05", "review", review="на самом деле так себе", sentiment=-0.9)
+    assert weight(profiler, rebuild_profile(conn, profiler, USER), "genre:Romance") == pytest.approx(base)
+
+
 def test_profile_saved_and_loaded(conn, profiler):
     record_rating(conn, USER, "tt01", 5)
     saved = rebuild_profile(conn, profiler, USER)
@@ -214,6 +225,44 @@ def test_recommend_ignores_saved_mood(conn):
     save_daily(conn, USER, {"time": "90", "company": "family"})
     assert rec.recommend(conn, USER, k=9).tconst.tolist() == plain
     assert rec.recommend(conn, USER, k=9, answers=load_daily(conn, USER)).tconst.tolist() != plain
+
+
+def test_explanation_names_director_and_genre(conn):
+    rec = Recommender(conn)
+    for t in ["tt01", "tt02"]:
+        record_rating(conn, USER, t, 5)
+    out = rec.recommend(conn, USER, k=9, answers={})
+    why = out.set_index("tconst").why
+    assert why["tt03"].startswith("Почему: тебе нравятся")
+    assert "Christopher Nolan" in why["tt03"] or "фантастика" in why["tt03"]
+
+
+def test_explanation_mentions_favorite():
+    text = explain(taste=["фантастика"], favorites=["Christopher Nolan"], mood=False, cf_driven=False, popular=False)
+    assert text == "Почему: здесь Christopher Nolan — из твоих любимых; тебе нравятся фантастика"
+
+
+def test_mmr_breaks_same_director_streak(conn):
+    """Без MMR первыми идут фильмы Нолана подряд; с MMR между ними попадает другое."""
+    rec = Recommender(conn)
+    for t in ["tt01", "tt02"]:
+        record_rating(conn, USER, t, 5)
+    plain = rec.recommend(conn, USER, k=3, answers={}, diverse=False).tconst.tolist()
+    diverse = rec.recommend(conn, USER, k=3, answers={}).tconst.tolist()
+    nolan = {"tt01", "tt02", "tt03", "tt09"}
+    assert sum(t in nolan for t in diverse) <= sum(t in nolan for t in plain)
+    assert len(set(diverse)) == 3
+
+
+def test_group_skips_films_seen_by_anyone_and_fits_both(conn):
+    rec = Recommender(conn)
+    record_rating(conn, 1, "tt01", 5)   # первому нравится фантастика Нолана
+    record_rating(conn, 2, "tt08", 5)   # второму — мультфильмы
+    record_reaction(conn, 2, "tt02", "seen")
+    out = rec.recommend_group(conn, [1, 2], k=9)
+    assert not {"tt01", "tt08", "tt02"} & set(out.tconst)
+    assert out.min_fit.iloc[0] >= out.min_fit.min()
+    assert set(out.best) <= {1, 2}
 
 
 def test_new_user_gets_popular_films(conn):

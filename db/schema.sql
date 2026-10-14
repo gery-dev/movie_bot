@@ -110,6 +110,12 @@ CREATE TABLE IF NOT EXISTS groups (
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- имя из Telegram — только чтобы показать участникам компании (/together), кто с ними
+CREATE TABLE IF NOT EXISTS user_names (
+    user_id     INTEGER PRIMARY KEY REFERENCES users(user_id),
+    name        TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS group_members (
     group_id    INTEGER NOT NULL REFERENCES groups(group_id),
     user_id     INTEGER NOT NULL REFERENCES users(user_id),

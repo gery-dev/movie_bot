@@ -15,6 +15,7 @@ from recsys.favorites import search_people as search_people_db
 from recsys.models import ALS, Catalog
 from recsys.profile import ensure_user, rebuild_profile, record_rating, record_reaction, set_list
 from recsys.recommender import Recommender
+from recsys.sentiment import load as load_sentiment, sentiment
 
 log = logging.getLogger(__name__)
 CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
@@ -33,6 +34,14 @@ class Carousel:
     logged: set[str] = field(default_factory=set)            # какие фильмы уже записаны как показанные
     answers: dict | None = None  # ответы /today; None — обычная подборка /recommend
     person: str | None = None    # имя человека, если листаем его фильмы из /favorites (список не догружается)
+    why: dict[str, str] = field(default_factory=dict)  # фильм → «Почему: …»
+    query: str | None = None     # текст запроса, если это результаты поиска обычным текстом
+    group: str | None = None     # имена участников, если это подборка для компании (/together)
+
+    @property
+    def fixed(self) -> bool:
+        """Готовый список (фильмы человека, результаты запроса) — в конце не догружается."""
+        return bool(self.person or self.query or self.group)
 
     @property
     def current(self) -> str:
@@ -48,6 +57,9 @@ class App:
             ids = [r[0] for r in self.conn.execute("SELECT tconst FROM movies ORDER BY tconst")]
             als = ALS(Catalog(ids), **ALS_PARAMS).fit(ml)
         self.rec = Recommender(self.conn, als=als, ml_ratings=ml)
+        if with_als:  # модели для запросов текстом и тональности грузятся секунды — лучше при запуске
+            self.rec.text_model()
+            load_sentiment()
         self.movies = self.rec.movies.set_index("tconst")
         self.pool = calibration.calibration_pool(
             pd.read_sql("SELECT tconst, year, genres, country, rating, votes FROM movies", self.conn).set_index("tconst")
@@ -59,6 +71,7 @@ class App:
         self.credits = {t: g for t, g in people.groupby("tconst")}
         self.last_rated: dict[int, tuple[str, float]] = {}  # пользователь → (фильм, время) для отзыва текстом
         self.carousels: dict[int, Carousel] = {}             # пользователь → подборка, которую он листает
+        self.pending_text: dict[int, str] = {}               # текст, про который спросили «отзыв или поиск?»
         self._titles = (self.movies.title_ru.fillna("") + " | " + self.movies.title.fillna("")).str.lower()
 
     # --- поиск ---
@@ -112,9 +125,12 @@ class App:
         tconst, ts = self.last_rated.get(user_id, (None, 0.0))
         return tconst if time.time() - ts <= REVIEW_WINDOW else None
 
-    def save_review(self, user_id: int, tconst: str, text: str) -> None:
-        self.react(user_id, tconst, "review", review=text[:2000])
+    def save_review(self, user_id: int, tconst: str, text: str) -> float:
+        """Сохранить отзыв с тональностью (−1…+1); она немного уточняет профиль."""
+        tone = sentiment(text)
+        self.react(user_id, tconst, "review", review=text[:2000], sentiment=tone)
         self.last_rated.pop(user_id, None)
+        return tone
 
     def rate(self, user_id: int, tconst: str, rating: int, source: str) -> None:
         if source == "recommendation":
@@ -125,9 +141,10 @@ class App:
             rebuild_profile(self.conn, self.rec.profiler, user_id)
         log.info("user %s rated %s: %s (%s)", user_id, tconst, rating, source)
 
-    def react(self, user_id: int, tconst: str, reaction: str, review: str | None = None) -> None:
+    def react(self, user_id: int, tconst: str, reaction: str, review: str | None = None,
+              sentiment: float | None = None) -> None:
         with self.conn:
-            record_reaction(self.conn, user_id, tconst, reaction, review)
+            record_reaction(self.conn, user_id, tconst, reaction, review, sentiment)
             if reaction in ("seen", "not_interested", "later", "ignored"):
                 self._answer(user_id, tconst, reaction)
             rebuild_profile(self.conn, self.rec.profiler, user_id)
