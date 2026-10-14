@@ -25,18 +25,28 @@ EMB_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 TOP_ACTORS = 3
 
 
-def meta_features(tconsts: list[str]) -> sparse.csr_matrix:
+def runtime_bucket(minutes) -> str | None:
+    if pd.isna(minutes):
+        return None
+    return "short" if minutes < 90 else "medium" if minutes <= 130 else "long"
+
+
+def meta_features(tconsts: list[str], with_names: bool = False, conn=None):
     """Строки — фильмы в порядке tconsts, столбцы — признаки вида genre:Drama, director:nm…
 
     Веса TF-IDF: редкий признак (конкретный режиссёр) значит больше частого (драма).
     Строки нормированы, так что произведение строк — косинусная близость.
+    with_names=True — вернуть ещё и названия столбцов (для профиля пользователя).
+    conn — открытая БД (по умолчанию основная).
     """
-    conn = connect()
-    movies = pd.read_sql("SELECT tconst, year, genres, country, language FROM movies", conn).set_index("tconst")
+    own = conn is None
+    conn = connect() if own else conn
+    movies = pd.read_sql("SELECT tconst, year, runtime, genres, country, language FROM movies", conn).set_index("tconst")
     people = pd.read_sql(
         f"SELECT tconst, nconst, role FROM movie_people WHERE role = 'director' OR ord <= {TOP_ACTORS}", conn
     )
-    conn.close()
+    if own:
+        conn.close()
 
     movies = movies.reindex(tconsts)
     movies[["genres", "country", "language"]] = movies[["genres", "country", "language"]].fillna("")
@@ -48,14 +58,16 @@ def meta_features(tconsts: list[str]) -> sparse.csr_matrix:
             tags[t].append(f"decade:{int(row.year) // 10 * 10}")
         if row.language:
             tags[t].append(f"lang:{row.language}")
+        if bucket := runtime_bucket(row.runtime):
+            tags[t].append(f"runtime:{bucket}")
     for p in people.itertuples():
         if p.tconst in tags:
             tags[p.tconst].append(f"{p.role}:{p.nconst}")
 
     mlb = MultiLabelBinarizer(sparse_output=True)
     X = mlb.fit_transform([tags[t] for t in tconsts]).tocsr().astype(np.float32)
-    X = TfidfTransformer().fit_transform(X)
-    return normalize(X).tocsr()
+    X = normalize(TfidfTransformer().fit_transform(X)).tocsr()
+    return (X, list(mlb.classes_)) if with_names else X
 
 
 async def _texts() -> pd.DataFrame:
