@@ -171,11 +171,11 @@ class App:
                 self.conn.execute("DELETE FROM user_lists WHERE user_id = ? AND tconst = ? AND list = 'hidden'",
                                   (user_id, tconst))
 
-    def log_shown(self, user_id: int, tconsts: list[str]) -> None:
+    def log_shown(self, user_id: int, tconsts: list[str], mode: str = "recommend") -> None:
         with self.conn:
             ensure_user(self.conn, user_id)  # подборку могут попросить до /start
-            self.conn.executemany("INSERT INTO recommendations (user_id, tconst) VALUES (?, ?)",
-                                  [(user_id, t) for t in tconsts])
+            self.conn.executemany("INSERT INTO recommendations (user_id, tconst, mode) VALUES (?, ?, ?)",
+                                  [(user_id, t, mode) for t in tconsts])
 
     def _answer(self, user_id: int, tconst: str, answer: str) -> None:
         self.conn.execute(

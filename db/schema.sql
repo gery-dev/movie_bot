@@ -128,9 +128,19 @@ CREATE TABLE IF NOT EXISTS recommendations (
     tconst      TEXT NOT NULL REFERENCES movies(tconst),
     shown_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     asked_at    TEXT,                      -- когда бот спросил, посмотрел ли
-    answer      TEXT                       -- rated | seen | not_interested | later | hidden | ignored
+    answer      TEXT,                      -- rated | seen | not_interested | later | hidden | ignored
+    mode        TEXT                       -- recommend | today | query
 );
 CREATE INDEX IF NOT EXISTS idx_recommendations_open ON recommendations(answer, shown_at);
+
+-- ответы на опрос «насколько подборки подходят» (онлайн-тест, этап 6)
+CREATE TABLE IF NOT EXISTS survey (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(user_id),
+    wave        INTEGER NOT NULL,          -- после скольких оценок из подборок спросили
+    score       INTEGER NOT NULL,          -- 1–5
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Кэш внешних API ------------------------------------------------------------
 

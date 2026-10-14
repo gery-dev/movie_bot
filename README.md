@@ -87,4 +87,16 @@ python -m bot   # нужны TELEGRAM_BOT_TOKEN и TMDB_API_KEY в .env и за�
 Интервалы вопроса «посмотрел?» задаются в `.env` в минутах: `FEEDBACK_DELAY_MIN` (по умолчанию сутки после подборки),
 `FEEDBACK_ASK_GAP_MIN` (не чаще раза в 6 часов), `FEEDBACK_IGNORE_AFTER_MIN` (через неделю без ответа — «проигнорировано»).
 
+## Тестирование
+
+```bash
+pytest                                   # юнит-тесты
+python -m bot.benchmark                  # время ответа (ТЗ п. 4.3) → reports/timing.md
+python -m recsys.cold_start              # холодный старт → reports/cold_start.md
+python -m recsys.evaluate ml-32m --sample-users 20000 --eval-users 3000   # большой MovieLens
+python -m recsys.online_stats --exclude <свои ID>                         # онлайн-тест → reports/online_test.md
+```
+
+Сводка: [reports/testing.md](reports/testing.md).
+
 Данные IMDb и MovieLens используются только в некоммерческих целях и в репозиторий не попадают.

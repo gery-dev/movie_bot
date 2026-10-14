@@ -41,7 +41,11 @@ from recsys.today import today_filter, today_scores
 A, B, C = 1.0, 0.3, 0.1
 CANDIDATES = 300
 CF_WEIGHT = 0.5            # доля ALS в долгосрочной части (этап 2)
-MIN_RATINGS_FOR_CF = 5
+# Холодный старт (recsys/cold_start.py, 150 пользователей MovieLens, NDCG@10; без данных — 0,048):
+#   было: ALS с 5 оценок, без популярности — знакомство 0,019, + калибровка 0,031, импорт 0,102;
+#   ALS с 1-й оценки и доля популярности N0 / (n + N0), N0 = 5 — 0,058, 0,062, 0,107.
+MIN_RATINGS_FOR_CF = 1
+POPULARITY_PRIOR = 5
 POPULARITY_MIN_VOTES = 200_000  # поправка на число голосов во взвешенном рейтинге (этап 2)
 # MMR (разнообразие выдачи). Подбор на 30 пользователях MovieLens, пятёрка фильмов:
 #   без MMR — у 27% все 5 фильмов одного жанра, у 33% повтор режиссёра;
@@ -103,15 +107,18 @@ class Recommender:
         profile_score = _unit(self.profiler.scores(profile))
         parts = {"total": profile_score, "profile": profile, "profile_score": profile_score, "cf": None}
         ratings = conn.execute("SELECT tconst, rating FROM ratings WHERE user_id = ?", (user_id,)).fetchall()
-        if self.als is None or len(ratings) < MIN_RATINGS_FOR_CF:
-            return parts
-        row = sparse.csr_matrix(
-            ([float(r) for _, r in ratings], ([0] * len(ratings), self.catalog.positions([t for t, _ in ratings]))),
-            shape=(1, len(self.catalog)),
-        )
-        factors = self.als.model.recalculate_user(0, row)
-        cf = _unit(np.where(self.cf_known, self.als.model.item_factors @ np.asarray(factors).ravel(), -np.inf))
-        parts.update(cf=cf, total=CF_WEIGHT * cf + (1 - CF_WEIGHT) * profile_score)
+        if self.als is not None and len(ratings) >= MIN_RATINGS_FOR_CF:
+            row = sparse.csr_matrix(
+                ([float(r) for _, r in ratings], ([0] * len(ratings), self.catalog.positions([t for t, _ in ratings]))),
+                shape=(1, len(self.catalog)),
+            )
+            factors = self.als.model.recalculate_user(0, row)
+            cf = _unit(np.where(self.cf_known, self.als.model.item_factors @ np.asarray(factors).ravel(), -np.inf))
+            parts.update(cf=cf, total=CF_WEIGHT * cf + (1 - CF_WEIGHT) * profile_score)
+        # пока оценок мало, вкус известен плохо — подмешиваем популярность: её доля N0 / (n + N0)
+        if POPULARITY_PRIOR:
+            share = POPULARITY_PRIOR / (len(ratings) + POPULARITY_PRIOR)
+            parts["total"] = (1 - share) * parts["total"] + share * _unit(self.popularity)
         return parts
 
     def long_term(self, conn, user_id: int, events=None) -> np.ndarray:

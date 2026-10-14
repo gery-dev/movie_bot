@@ -93,3 +93,39 @@ def test_text_soon_after_rating_is_review(monkeypatch):
 @pytest.mark.parametrize("n, word", [(1, "фильм"), (3, "фильма"), (5, "фильмов"), (11, "фильмов"), (22, "фильма")])
 def test_films_word(n, word):
     assert films_word(n) == word
+
+
+def test_survey_asked_after_5_and_20_ratings(tmp_path):
+    from types import SimpleNamespace
+
+    from bot.handlers.recommend import survey_due
+    from db.database import connect
+    from recsys.profile import record_rating
+
+    conn = connect(tmp_path / "t.db")
+    conn.executemany("INSERT INTO movies (tconst, title) VALUES (?, ?)", [(f"tt{i:02d}", str(i)) for i in range(25)])
+    app = SimpleNamespace(conn=conn)
+    for i in range(4):
+        record_rating(conn, 1, f"tt{i:02d}", 4, "recommendation")
+    assert survey_due(app, 1) is None
+    record_rating(conn, 1, "tt04", 4, "recommendation")
+    assert survey_due(app, 1) == 5
+    conn.execute("INSERT INTO survey (user_id, wave, score) VALUES (1, 5, 4)")
+    assert survey_due(app, 1) is None
+    for i in range(5, 20):
+        record_rating(conn, 1, f"tt{i:02d}", 4, "recommendation")
+    assert survey_due(app, 1) == 20
+
+
+def test_old_database_gets_new_column(tmp_path):
+    import sqlite3
+
+    from db.database import connect
+
+    old = sqlite3.connect(tmp_path / "old.db")
+    old.execute("CREATE TABLE recommendations (id INTEGER PRIMARY KEY, user_id INTEGER, tconst TEXT, "
+                "shown_at TEXT, asked_at TEXT, answer TEXT)")
+    old.commit()
+    old.close()
+    conn = connect(tmp_path / "old.db")
+    assert "mode" in {r[1] for r in conn.execute("PRAGMA table_info(recommendations)")}

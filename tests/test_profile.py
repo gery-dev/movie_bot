@@ -211,10 +211,12 @@ def test_recommender_excludes_seen_and_applies_filters(conn):
 def test_favorite_bonus_raises_film(conn):
     rec = Recommender(conn)
     record_rating(conn, USER, "tt05", 5)
-    before = rec.recommend(conn, USER, k=9, answers={}).tconst.tolist()
+    score = lambda: rec.recommend(conn, USER, k=9, answers={}).set_index("tconst").score  # noqa: E731
+    before = score()
     add_favorite(conn, USER, "nm2")
-    after = rec.recommend(conn, USER, k=9, answers={}).tconst.tolist()
-    assert after.index("tt04") < before.index("tt04")
+    after = score()
+    assert after["tt04"] > before["tt04"]                      # фильм любимого режиссёра поднялся
+    assert after.drop("tt04").equals(before.drop("tt04"))      # остальные не изменились
 
 
 def test_recommend_ignores_saved_mood(conn):

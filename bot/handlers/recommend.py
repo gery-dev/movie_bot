@@ -3,6 +3,7 @@
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
+from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -112,7 +113,7 @@ async def render(bot: Bot, user_id: int, app: App, new_message: bool = False, ke
     if new_message and old_id and old_id != c.message_id:
         await _drop_keyboard(bot, user_id, old_id)
     if t not in c.logged and not (c.person or c.group):  # фильмы человека — не рекомендация, «посмотрел?» по ним не спрашиваем
-        app.log_shown(user_id, [t])
+        app.log_shown(user_id, [t], "query" if c.query else "today" if c.answers is not None else "recommend")
         c.logged.add(t)
 
 
@@ -293,8 +294,9 @@ async def card_answer(callback: CallbackQuery, callback_data: MovieCb, state: FS
 # --- отзыв, затем продолжение ---
 
 async def after_review(bot: Bot, user_id: int, app: App, in_carousel: bool) -> None:
-    """Что дальше после отзыва: предложить любимых и показать следующий фильм подборки."""
+    """Что дальше после отзыва: предложить любимых, при случае — опрос, и показать следующий фильм подборки."""
     await offer_favorite(bot, user_id, app)
+    await offer_survey(bot, user_id, app)
     if in_carousel and user_id in app.carousels:
         if not await advance(bot, user_id, app, new_message=True):
             await bot.send_message(user_id, nothing_more(app.carousels[user_id]))
@@ -333,6 +335,48 @@ async def menu(callback: CallbackQuery, callback_data: NavCb, state: FSMContext,
         await start_recommendations(bot, callback.from_user.id, app)
     else:
         await open_today(bot, callback.from_user.id, state, app)
+
+
+# --- опрос «насколько подходят подборки» (онлайн-тест, этап 6) ---
+
+SURVEY_WAVES = (5, 20)  # спросить после 5 и после 20 оценок фильмов из подборок
+SURVEY_LABELS = {1: "1 — совсем мимо", 2: "2 — скорее мимо", 3: "3 — так себе", 4: "4 — хорошо", 5: "5 — в точку"}
+
+
+class SurveyCb(CallbackData, prefix="sv"):
+    w: int
+    s: int
+
+
+def survey_due(app: App, user_id: int) -> int | None:
+    rated = app.conn.execute("SELECT count(*) FROM ratings WHERE user_id = ? AND source = 'recommendation'",
+                             (user_id,)).fetchone()[0]
+    done = {r[0] for r in app.conn.execute("SELECT wave FROM survey WHERE user_id = ?", (user_id,))}
+    due = [w for w in SURVEY_WAVES if rated >= w and w not in done]
+    return due[-1] if due else None
+
+
+async def offer_survey(bot: Bot, user_id: int, app: App) -> None:
+    wave = survey_due(app, user_id)
+    if wave is None:
+        return
+    kb = InlineKeyboardBuilder()
+    for score, label in SURVEY_LABELS.items():
+        kb.button(text=label, callback_data=SurveyCb(w=wave, s=score))
+    kb.adjust(1)
+    await bot.send_message(user_id, f"Уже {wave} оценок фильмов из подборок — спасибо! Насколько подборки тебе подходят?",
+                           reply_markup=kb.as_markup())
+
+
+@router.callback_query(SurveyCb.filter())
+async def survey_answer(callback: CallbackQuery, callback_data: SurveyCb, app: App) -> None:
+    with app.conn:
+        if not app.conn.execute("SELECT 1 FROM survey WHERE user_id = ? AND wave = ?",
+                                (callback.from_user.id, callback_data.w)).fetchone():
+            app.conn.execute("INSERT INTO survey (user_id, wave, score) VALUES (?, ?, ?)",
+                             (callback.from_user.id, callback_data.w, callback_data.s))
+    await callback.message.edit_reply_markup(reply_markup=status_kb(SURVEY_LABELS[callback_data.s]))
+    await callback.answer("Спасибо!")
 
 
 # --- автопредложение любимых ---
