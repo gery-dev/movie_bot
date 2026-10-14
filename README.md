@@ -28,6 +28,9 @@ cp .env.example .env   # и вписать ключи
 ```bash
 python -m data_pipeline.imdb download              # датасеты IMDb в data/raw/ (~1,9 ГБ)
 python -m data_pipeline.imdb load --min-votes 5000 # фильмы, люди, жанры в data/movies.db
+python -m data_pipeline.movielens download ml-latest-small  # оценки для опытов (1 МБ)
+python -m data_pipeline.movielens download ml-32m           # оценки для итоговых замеров (239 МБ)
+python -m data_pipeline.movielens link ml-latest-small      # сколько фильмов и оценок связалось с IMDb
 ```
 
-Данные IMDb используются только в некоммерческих целях и в репозиторий не попадают.
+Данные IMDb и MovieLens используются только в некоммерческих целях и в репозиторий не попадают.
