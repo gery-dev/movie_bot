@@ -13,6 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from data_pipeline.movielens import load_ratings  # noqa: E402
+from bot.texts import GENRES_RU  # noqa: E402
 from db.database import ROOT, connect  # noqa: E402
 
 FIG_DIR = ROOT / "reports" / "figures"
@@ -48,16 +49,6 @@ def median_line(ax, value: float, label: str) -> None:
     ax.set_ylim(0, top * 1.12)
     ax.axvline(value, color=INK_2, linewidth=1, linestyle="--")
     ax.annotate(label, (value, top * 1.06), xytext=(5, 0), textcoords="offset points", va="center", color=INK)
-
-
-GENRES_RU = {
-    "Drama": "Драма", "Comedy": "Комедия", "Action": "Боевик", "Crime": "Криминал", "Romance": "Мелодрама",
-    "Thriller": "Триллер", "Adventure": "Приключения", "Horror": "Ужасы", "Mystery": "Детектив",
-    "Fantasy": "Фэнтези", "Biography": "Биография", "Sci-Fi": "Фантастика", "Family": "Семейный",
-    "Animation": "Мультфильм", "History": "История", "Documentary": "Документальный", "Music": "Музыка",
-    "War": "Военный", "Sport": "Спорт", "Musical": "Мюзикл", "Western": "Вестерн", "Film-Noir": "Нуар",
-    "News": "Новости",
-}
 
 
 # %%

@@ -136,7 +136,7 @@ def calibration_check(n_users: int = 200) -> dict:
         n_decades.append(pool.loc[shown].decade.nunique())
     n_genres, n_decades = np.array(n_genres), np.array(n_decades)
     return {"pool": len(pool), "genres_mean": n_genres.mean(), "decades_mean": n_decades.mean(),
-            "ok_share": ((n_genres >= 6) & (n_decades >= 4)).mean(), "genres_min": n_genres.min(),
+            "ok_share": ((n_genres >= 6) & (n_decades >= 3)).mean(), "genres_min": n_genres.min(),
             "decades_min": n_decades.min()}
 
 
@@ -223,10 +223,10 @@ def main() -> None:
     print(f"   {cal}")
     lines.append(f"## 5. Разнообразие калибровки\n\n200 смоделированных пользователей (2 случайных стартовых жанра, "
                  f"40% ответов «не смотрел»), по {calibration.CALIBRATION_SIZE} карточек из пула {cal['pool']} фильмов "
-                 f"(голосов ≥ {calibration.MIN_VOTES}, рейтинг ≥ {calibration.MIN_RATING}).\n\n"
+                 f"(с {calibration.MIN_YEAR} года, голосов ≥ {calibration.MIN_VOTES}, рейтинг ≥ {calibration.MIN_RATING}).\n\n"
                  f"- жанров за калибровку: в среднем {cal['genres_mean']:.1f}, минимум {cal['genres_min']};\n"
                  f"- десятилетий: в среднем {cal['decades_mean']:.1f}, минимум {cal['decades_min']};\n"
-                 f"- условие «≥ 6 жанров и ≥ 4 десятилетия» выполнено у {cal['ok_share']:.0%} пользователей.\n")
+                 f"- условие «≥ 6 жанров и все 3 десятилетия (2000-е, 2010-е, 2020-е)» выполнено у {cal['ok_share']:.0%} пользователей.\n")
 
     header = (f"# Подбор параметров профиля ({DATASET})\n\nТест — последние 20% оценок каждого пользователя, "
               f"валидация — последние 20% обучающей части, понравившийся фильм — оценка ≥ {RELEVANT:g}, K = 10. "

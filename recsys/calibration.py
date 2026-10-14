@@ -1,5 +1,7 @@
-"""Подбор фильмов для калибровки вкуса: 8–10 карточек разных жанров, эпох и стран.
+"""Подбор фильмов для калибровки вкуса: 10 карточек разных жанров, лет и стран.
 
+Пул — очень известные фильмы с 2000 года: основная аудитория бота — 16–30 лет, и старые или
+малоизвестные фильмы они чаще всего не видели (решение пользователя после проверки бота).
 Следующий фильм выбирается с учётом уже показанных и ответов на них:
 - новизна — жанры, десятилетие и страна, которых ещё не было;
 - узнаваемость — чем чаще пользователь отвечает «не смотрел», тем известнее следующие фильмы;
@@ -10,12 +12,14 @@ import numpy as np
 import pandas as pd
 
 CALIBRATION_SIZE = 10
-MIN_VOTES = 20_000   # фильм должен быть хоть сколько-то известен, иначе его почти никто не видел
-MIN_RATING = 6.0
+MIN_YEAR = 2000
+MIN_VOTES = 200_000  # ~883 фильма: «Интерстеллар», «Дэдпул», «Холодное сердце»…
+MIN_RATING = 6.5
 
 
 def calibration_pool(movies: pd.DataFrame) -> pd.DataFrame:
-    pool = movies[(movies.votes >= MIN_VOTES) & (movies.rating >= MIN_RATING) & movies.genres.notna()].copy()
+    pool = movies[(movies.year >= MIN_YEAR) & (movies.votes >= MIN_VOTES) & (movies.rating >= MIN_RATING)
+                  & movies.genres.notna()].copy()
     pool["genre_set"] = pool.genres.str.split(",").map(set)
     pool["decade"] = (pool.year // 10 * 10).astype(int)
     pool["country1"] = pool.country.fillna("").str.split(",").str[0]
@@ -35,8 +39,7 @@ def next_film(pool: pd.DataFrame, shown: list[str], not_seen: int = 0, start_gen
     new_genres = rest.genre_set.map(lambda g: len(g - shown_genres)).clip(upper=3) / 3
     new_decade = (~rest.decade.isin(set(seen_rows.decade))).astype(float)
     new_country = (~rest.country1.isin(set(seen_rows.country1))).astype(float)
-    # веса подобраны в recsys/tune.py: при большем весе десятилетия калибровка уходит в 1920–30-е,
-    # которые мало кто видел; при большем весе известности остаются одни хиты
+    # веса подобраны в recsys/tune.py: при большем весе известности остаются одни и те же хиты
     fame_weight = 1.0 + 0.3 * not_seen
     score = 1.5 * new_genres + 0.5 * new_decade + 0.5 * new_country + fame_weight * rest.fame
     if start_genres and len(shown) < 3:  # первые карточки — из любимых жанров, чтобы начать с понятного

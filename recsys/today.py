@@ -1,7 +1,9 @@
-"""Профиль на сегодня: короткий опрос, действующий несколько часов.
+"""Профиль на сегодня: короткий опрос для команды /today.
 
 Длительность и язык — жёсткие фильтры (фильм либо подходит, либо нет).
 Настроение, компания, новизна и эпоха — приоритеты: поднимают подходящие фильмы в выдаче.
+Ответы действуют, пока человек пользуется ботом: устаревают после VALID_HOURS без единого действия
+(каждое действие продлевает срок). Прошлые ответы хранятся и после этого — для кнопки «Как в прошлый раз».
 """
 import json
 from datetime import datetime, timedelta
@@ -11,12 +13,12 @@ import pandas as pd
 
 from recsys.profile import ensure_user
 
-VALID_HOURS = 6
+VALID_HOURS = 22  # решение пользователя: настроение сбрасывается после ~суток без использования бота
 
 # варианты ответов: ключ → подпись для кнопки
 QUESTIONS = {
-    "mood": {"fun": "Повеселее", "tense": "Напряжённое", "thoughtful": "Задуматься", "romantic": "Романтичное", "any": "Любое"},
-    "time": {"90": "До 1,5 часа", "120": "До 2 часов", "any": "Не важно"},
+    "mood": {"fun": "Весёлое", "tense": "Напряжённое", "thoughtful": "Задуматься", "romantic": "Романтичное", "any": "Любое"},
+    "time": {"90": "До 1,5 часа", "120": "До 2 часов", "180": "До 3 часов", "any": "Не важно"},
     "company": {"alone": "Один", "couple": "Вдвоём", "friends": "С друзьями", "family": "С семьёй"},
     "novelty": {"new": "Что-то новое", "proven": "Проверенное", "any": "Не важно"},
     "language": {"ru": "Русское", "foreign": "Зарубежное", "any": "Не важно"},
@@ -92,3 +94,22 @@ def load_daily(conn, user_id: int) -> dict | None:
     if row is None or datetime.fromisoformat(row[1]) < datetime.now():
         return None
     return json.loads(row[0])
+
+
+def load_last(conn, user_id: int) -> dict | None:
+    """Последние ответы, даже устаревшие, — для кнопки «Как в прошлый раз»."""
+    row = conn.execute("SELECT answers FROM daily_session WHERE user_id = ?", (user_id,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def extend_daily(conn, user_id: int, hours: int = VALID_HOURS) -> None:
+    """Человек что-то сделал в боте — продлеваем ещё действующие ответы."""
+    expires = (datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
+    conn.execute("UPDATE daily_session SET expires_at = ? WHERE user_id = ? AND expires_at >= ?",
+                 (expires, user_id, datetime.now().isoformat(timespec="seconds")))
+
+
+def summary(answers: dict) -> str:
+    """«Весёлое · До 2 часов · С друзьями» — ответы, кроме «не важно»."""
+    return " · ".join(QUESTIONS[q][v] for q, v in answers.items() if q in QUESTIONS and v != "any") \
+        or "без особых пожеланий"

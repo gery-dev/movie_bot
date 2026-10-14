@@ -26,6 +26,7 @@ SIGNALS = {
     "later": 0.1,
     "seen": 0.0,
     "skip": 0.0,
+    "review": 0.0,  # текстовый отзыв; его тональность учтём на этапе 5
 }
 REACTION_LISTS = {"seen": "seen", "later": "planned"}  # реакция → список пользователя
 

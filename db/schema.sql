@@ -116,6 +116,16 @@ CREATE TABLE IF NOT EXISTS group_members (
     PRIMARY KEY (group_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS recommendations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(user_id),
+    tconst      TEXT NOT NULL REFERENCES movies(tconst),
+    shown_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    asked_at    TEXT,                      -- когда бот спросил, посмотрел ли
+    answer      TEXT                       -- rated | seen | not_interested | later | hidden | ignored
+);
+CREATE INDEX IF NOT EXISTS idx_recommendations_open ON recommendations(answer, shown_at);
+
 -- Кэш внешних API ------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS api_cache (

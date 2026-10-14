@@ -1,4 +1,6 @@
 """Тесты профиля, профиля на сегодня, избранного и калибровки на маленькой тестовой БД."""
+from datetime import datetime, timedelta
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -9,7 +11,8 @@ from recsys.favorites import add_favorite, person_unseen, suggest_favorites
 from recsys.profile import (DAY, Profiler, decay, excluded_films, rating_signal, rebuild_profile, record_rating,
                             record_reaction, load_profile, user_events)
 from recsys.recommender import Recommender
-from recsys.today import load_daily, save_daily, today_filter, today_scores
+from recsys.today import (extend_daily, load_daily, load_last, save_daily, summary, today_filter,
+                          today_scores)
 
 USER = 1
 MOVIES = [
@@ -147,6 +150,22 @@ def test_daily_session_saved_and_expires(conn):
     assert load_daily(conn, USER) == {"mood": "fun"}
     save_daily(conn, USER, {"mood": "fun"}, hours=-1)
     assert load_daily(conn, USER) is None
+    assert load_last(conn, USER) == {"mood": "fun"}  # для кнопки «Как в прошлый раз»
+
+
+def test_activity_extends_only_live_answers(conn):
+    save_daily(conn, USER, {"mood": "fun"}, hours=1)
+    extend_daily(conn, USER)
+    expires = conn.execute("SELECT expires_at FROM daily_session WHERE user_id = ?", (USER,)).fetchone()[0]
+    assert datetime.fromisoformat(expires) > datetime.now() + timedelta(hours=21)
+    save_daily(conn, USER, {"mood": "fun"}, hours=-1)
+    extend_daily(conn, USER)  # устаревшие ответы не оживают
+    assert load_daily(conn, USER) is None
+
+
+def test_summary_skips_any():
+    assert summary({"mood": "fun", "time": "180", "era": "any"}) == "Весёлое · До 3 часов"
+    assert summary({"mood": "any"}) == "без особых пожеланий"
 
 
 # --- любимые люди ---
@@ -185,6 +204,16 @@ def test_favorite_bonus_raises_film(conn):
     add_favorite(conn, USER, "nm2")
     after = rec.recommend(conn, USER, k=9, answers={}).tconst.tolist()
     assert after.index("tt04") < before.index("tt04")
+
+
+def test_recommend_ignores_saved_mood(conn):
+    """/recommend — только вкус: сохранённые ответы /today на неё не влияют."""
+    rec = Recommender(conn)
+    record_rating(conn, USER, "tt05", 5)
+    plain = rec.recommend(conn, USER, k=9).tconst.tolist()
+    save_daily(conn, USER, {"time": "90", "company": "family"})
+    assert rec.recommend(conn, USER, k=9).tconst.tolist() == plain
+    assert rec.recommend(conn, USER, k=9, answers=load_daily(conn, USER)).tconst.tolist() != plain
 
 
 def test_new_user_gets_popular_films(conn):

@@ -83,6 +83,13 @@ class TMDB:
             append_to_response="videos,watch/providers", include_video_language="ru,en",
         )
 
+    async def search_person(self, query: str, limit: int = 5) -> list[tuple[str, str]]:
+        """Поиск человека по имени на любом языке (например, «Нолан») → [(IMDb ID, имя)]."""
+        data = await self.get("/search/person", query=query.strip(), language="ru-RU")
+        people = data.get("results", [])[:limit]
+        ids = await asyncio.gather(*(self.get(f"/person/{p['id']}/external_ids") for p in people))
+        return [(x["imdb_id"], p["name"]) for p, x in zip(people, ids) if x.get("imdb_id")]
+
     async def overview_en(self, tmdb_id: int) -> str | None:
         """Описание на английском — для фильмов, у которых нет русского."""
         data = await self.get(f"/movie/{tmdb_id}", shrink=lambda m: {"overview": m.get("overview")}, language="en-US")

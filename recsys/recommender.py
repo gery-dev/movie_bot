@@ -19,16 +19,20 @@ from scipy import sparse
 from recsys.favorites import favorite_people
 from recsys.models import Catalog, _unit
 from recsys.profile import Profiler, excluded_films, user_events
-from recsys.today import load_daily, today_filter, today_scores
+from recsys.today import today_filter, today_scores
 
 # Подбор — recsys/tune.py, результаты — reports/profile_tuning.md.
-# B: на модели «желание = частый жанр теста» метрика растёт и выходит на плато; берём наименьший B,
-#    дающий не меньше 99% лучшего результата — 0,5. Больше — пожелание вытесняет вкус без выигрыша.
+# B: на модели «желание = частый жанр теста» метрика растёт до плато (лучший по правилу 99% — 0,5,
+#    там 100% выдачи под желание). По решению пользователя настроение должно перевешивать вкус
+#    умеренно — «примерно 4 фильма из 5 под настроение». Проверено на настоящих ответах опроса
+#    (30 пользователей MovieLens, настроения «весёлое», «напряжённое», «задуматься», «романтичное»):
+#    B = 0,1 — 56% топ-10 под настроение, 0,2 — 73%, 0,3 — 82%, 0,5 — 92%. Берём 0,3; при нём
+#    с обычной подборкой /recommend совпадает около трети фильмов.
 # C: на MovieLens лучший C = 0: там любимые выведены из тех же высоких оценок, и бонус только сильнее
 #    толкает уже учтённых людей (C = 0,1 стоит ~5% NDCG). В боте любимых добавляют вручную — это новая
 #    информация, поэтому оставлен небольшой C = 0,1. Главное место любимых — отдельный список их
 #    непросмотренных фильмов (recsys/favorites.py). Перепроверить на живых пользователях (этап 6).
-A, B, C = 1.0, 0.5, 0.1
+A, B, C = 1.0, 0.3, 0.1
 CANDIDATES = 300
 CF_WEIGHT = 0.5            # доля ALS в долгосрочной части (этап 2)
 MIN_RATINGS_FOR_CF = 5
@@ -98,8 +102,9 @@ class Recommender:
         return bonus
 
     def recommend(self, conn, user_id: int, k: int = 5, answers: dict | None = None) -> pd.DataFrame:
-        """Топ-k фильмов с частями оценки. answers — опрос на сегодня (по умолчанию из БД)."""
-        answers = load_daily(conn, user_id) if answers is None else answers
+        """Топ-k фильмов с частями оценки. answers — опрос на сегодня (/today); без него — обычная
+        подборка по вкусу (/recommend)."""
+        answers = answers or {}
         long_term = self.long_term(conn, user_id)
         today = today_scores(self.movies, answers) if answers else np.zeros(len(self.catalog))
         fav = self.favorites_bonus(conn, user_id)
