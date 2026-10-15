@@ -1,12 +1,13 @@
 """Тесты частей бота, которые не требуют Telegram: карточка, кнопки, поиск фильмов."""
 import pytest
 
-from bot.cards import CAPTION_LIMIT, card_text, kinopoisk_url
+from bot.cards import CAPTION_LIMIT, card_text, kinopoisk_url, youtube_search_url
 from bot.keyboards import MovieCb, PersonCb, movie_kb, status_kb, today_kb
 from bot.texts import films_word
+from data_pipeline.tmdb import trailer_keys
 
 MOVIE = {"title": "Interstellar", "title_ru": "Интерстеллар", "year": 2014, "runtime": 169, "rating": 8.7,
-         "genres": "Adventure,Sci-Fi", "overview_ru": "Когда засуха приводит человечество к кризису…"}
+         "genres": "Adventure,Sci-Fi", "kp_id": 258687, "overview_ru": "Когда засуха приводит человечество к кризису…"}
 
 
 def test_card_has_main_facts():
@@ -55,18 +56,33 @@ def test_carousel_card_has_kinopoisk_and_nav_row_last():
     kb = movie_kb("tt0816692", "rec", trailer="https://youtu.be/x", watch=kinopoisk_url(MOVIE),
                   nav=[("← Назад", "prev"), ("Далее →", "next")])
     rows = [[b.text for b in row] for row in kb.inline_keyboard]
-    assert rows[0] == ["▶ Трейлер", "Найти на Кинопоиске"]
+    assert rows[0] == ["▶ Трейлер", "Открыть на Кинопоиске"]
     assert rows[-1] == ["← Назад", "Далее →"]
 
 
 def test_status_keeps_links_and_nav():
     kb = status_kb("Оценка 4 ★", watch="https://kp", nav=[("Далее →", "next")])
     rows = [[b.text for b in row] for row in kb.inline_keyboard]
-    assert rows == [["Найти на Кинопоиске"], ["✓ Оценка 4 ★"], ["Далее →"]]
+    assert rows == [["Открыть на Кинопоиске"], ["✓ Оценка 4 ★"], ["Далее →"]]
 
 
-def test_kinopoisk_url_searches_title_and_year():
-    assert kinopoisk_url(MOVIE) == "https://www.kinopoisk.ru/index.php?kp_query=%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%81%D1%82%D0%B5%D0%BB%D0%BB%D0%B0%D1%80+2014"
+def test_kinopoisk_url_is_film_page_or_none():
+    assert kinopoisk_url(MOVIE) == "https://www.kinopoisk.ru/film/258687/"
+    assert kinopoisk_url({**MOVIE, "kp_id": None}) is None
+
+
+def test_trailers_russian_first_then_english_only():
+    videos = [{"site": "YouTube", "type": "Trailer", "iso_639_1": "en", "key": "en1"},
+              {"site": "YouTube", "type": "Teaser", "iso_639_1": "ru", "key": "teaser"},
+              {"site": "YouTube", "type": "Trailer", "iso_639_1": "de", "key": "de1"},
+              {"site": "YouTube", "type": "Trailer", "iso_639_1": "ru", "key": "ru1"}]
+    assert trailer_keys({"videos": {"results": videos}}) == ["ru1", "en1"]
+
+
+def test_youtube_search_fallback():
+    assert youtube_search_url(MOVIE) == ("https://www.youtube.com/results?search_query="
+                                         "%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%81%D1%82%D0%B5%D0%BB%D0%BB%D0%B0%D1%80+2014+"
+                                         "%D1%82%D1%80%D0%B5%D0%B9%D0%BB%D0%B5%D1%80")
 
 
 def test_today_keyboard_back_only_after_first_question():

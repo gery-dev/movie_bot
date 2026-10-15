@@ -12,7 +12,7 @@ from aiogram.types import InlineKeyboardMarkup, InputMediaPhoto
 from bot.keyboards import movie_kb
 from bot.services import App
 from bot.texts import GENRES_RU
-from data_pipeline.tmdb import IMAGE_URL, trailer_url, watch_providers
+from data_pipeline.tmdb import IMAGE_URL, watch_providers
 
 log = logging.getLogger(__name__)
 CAPTION_LIMIT = 1024  # ограничение Telegram на подпись к фото
@@ -61,11 +61,17 @@ class Card:
     watch: str | None
 
 
-def kinopoisk_url(movie: dict) -> str:
-    """Поиск фильма на Кинопоиске: там страница фильма и, если есть, кнопка «Смотреть»."""
+def kinopoisk_url(movie: dict) -> str | None:
+    """Страница фильма на Кинопоиске (там и кнопка «Смотреть»). ID Кинопоиска берётся из Wikidata;
+    без него кнопки нет: поиск по названию находит нужный фильм слишком редко."""
+    return f"https://www.kinopoisk.ru/film/{int(movie['kp_id'])}/" if movie.get("kp_id") else None
+
+
+def youtube_search_url(movie: dict) -> str:
+    """Запасная ссылка, если рабочего трейлера нет: поиск трейлера на YouTube."""
     title = movie.get("title_ru") or movie.get("title") or ""
     year = f" {int(movie['year'])}" if pd.notna(movie.get("year")) else ""
-    return "https://www.kinopoisk.ru/index.php?kp_query=" + quote_plus(title + year)
+    return "https://www.youtube.com/results?search_query=" + quote_plus(f"{title}{year} трейлер")
 
 
 async def build_card(app: App, tconst: str, note: str | None = None) -> Card:
@@ -74,10 +80,12 @@ async def build_card(app: App, tconst: str, note: str | None = None) -> Card:
     if movie.get("tmdb_id"):
         details = await app.tmdb.movie(movie["tmdb_id"])
         app.conn.commit()  # кэш TMDB
-        trailer, providers = trailer_url(details), watch_providers(details)
+        trailer, providers = await app.tmdb.trailer_url(details), watch_providers(details)
+        app.conn.commit()  # кэш проверки YouTube
     directors, actors = app.people_of(tconst)
     photo = IMAGE_URL + movie["poster_path"] if movie.get("poster_path") else None
-    return Card(tconst, card_text(movie, directors, actors, providers, note), photo, trailer, kinopoisk_url(movie))
+    return Card(tconst, card_text(movie, directors, actors, providers, note), photo,
+                trailer or youtube_search_url(movie), kinopoisk_url(movie))
 
 
 async def show(bot: Bot, chat_id: int, card: Card, kb: InlineKeyboardMarkup, message_id: int | None = None) -> int:

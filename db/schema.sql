@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS movies (
     country         TEXT,
     language        TEXT,
     overview_ru     TEXT,
-    poster_path     TEXT
+    poster_path     TEXT,
+    kp_id           INTEGER                -- ID Кинопоиска (из Wikidata)
 );
 CREATE INDEX IF NOT EXISTS idx_movies_year ON movies(year);
 CREATE INDEX IF NOT EXISTS idx_movies_votes ON movies(votes);

@@ -25,6 +25,7 @@ IMAGE_URL = "https://image.tmdb.org/t/p/w500"
 CONCURRENCY = 20  # TMDB допускает около 50 запросов в секунду
 BATCH = 500
 REGION = "RU"  # для какой страны храним сервисы просмотра
+YOUTUBE_RECHECK_DAYS = 30  # через сколько дней заново проверять, что ролик на YouTube ещё доступен
 CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
 
 
@@ -39,11 +40,13 @@ class TMDB:
         self.auth_params = {} if key.startswith("eyJ") else {"api_key": key}
         self.conn = conn
         self.client = httpx.AsyncClient(base_url=API_URL, headers=self.auth_headers, timeout=20)
+        self.web = httpx.AsyncClient(timeout=5)  # для YouTube: без ключа TMDB в заголовках
         self.limit = asyncio.Semaphore(CONCURRENCY)
         self.requests = 0
 
     async def close(self) -> None:
         await self.client.aclose()
+        await self.web.aclose()
 
     async def get(self, path: str, shrink=None, **params) -> dict:
         """GET с кэшем; shrink(data) убирает из ответа лишнее перед сохранением."""
@@ -83,6 +86,34 @@ class TMDB:
             append_to_response="videos,watch/providers", include_video_language="ru,en",
         )
 
+    async def trailer_url(self, movie: dict) -> str | None:
+        """Первый доступный трейлер: сначала русские, потом английские. None — рабочего нет."""
+        for key in trailer_keys(movie):
+            if await self.youtube_ok(key):
+                return f"https://www.youtube.com/watch?v={key}"
+        return None
+
+    async def youtube_ok(self, key: str) -> bool:
+        """Ролик существует и открыт: oEmbed YouTube отвечает 404 на удалённые и 403 на закрытые
+        (401 — запрещено встраивание, но смотреть можно). Ответ кэшируется на YOUTUBE_RECHECK_DAYS."""
+        row = self.conn.execute(
+            "SELECT response FROM api_cache WHERE source = 'youtube' AND key = ? AND fetched_at > datetime('now', ?)",
+            (key, f"-{YOUTUBE_RECHECK_DAYS} days")).fetchone()
+        if row:
+            return json.loads(row[0])
+        try:
+            r = await self.web.get("https://www.youtube.com/oembed",
+                                   params={"url": f"https://www.youtube.com/watch?v={key}", "format": "json"})
+        except httpx.HTTPError:
+            return True  # YouTube не ответил — не прячем трейлер и не кэшируем
+        if r.status_code not in (200, 401, 403, 404):
+            return True
+        ok = r.status_code in (200, 401)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO api_cache (source, key, response, fetched_at) VALUES ('youtube', ?, ?, CURRENT_TIMESTAMP)",
+            (key, json.dumps(ok)))
+        return ok
+
     async def search_person(self, query: str, limit: int = 5) -> list[tuple[str, str]]:
         """Поиск человека по имени на любом языке (например, «Нолан») → [(IMDb ID, имя)]."""
         data = await self.get("/search/person", query=query.strip(), language="ru-RU")
@@ -110,12 +141,13 @@ def poster_url(movie: dict) -> str | None:
     return IMAGE_URL + movie["poster_path"] if movie.get("poster_path") else None
 
 
-def trailer_url(movie: dict) -> str | None:
+def trailer_keys(movie: dict) -> list[str]:
+    """Ключи трейлеров на YouTube: сначала русские, потом английские."""
     videos = movie.get("videos", {}).get("results", [])
-    trailers = [v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"]
-    # сначала русский трейлер, потом любой
+    trailers = [v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"
+                and v.get("iso_639_1") in ("ru", "en")]
     trailers.sort(key=lambda v: v.get("iso_639_1") != "ru")
-    return f"https://www.youtube.com/watch?v={trailers[0]['key']}" if trailers else None
+    return [v["key"] for v in trailers]
 
 
 def watch_providers(movie: dict) -> list[str]:

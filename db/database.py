@@ -18,7 +18,8 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 # столбцы, добавленные после создания таблиц: CREATE TABLE IF NOT EXISTS их в старую БД не добавит
-NEW_COLUMNS = [("recommendations", "mode", "TEXT")]  # recommend | today | query — для онлайн-статистики
+NEW_COLUMNS = [("recommendations", "mode", "TEXT"),  # recommend | today | query — для онлайн-статистики
+               ("movies", "kp_id", "INTEGER")]  # ID Кинопоиска для прямой ссылки
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

@@ -61,7 +61,7 @@ Nav = list[tuple[str, str]]  # кнопки навигации: (подпись,
 
 
 def _links(kb: InlineKeyboardBuilder, trailer: str | None, watch: str | None) -> list[int]:
-    links = [(text, url) for text, url in [("▶ Трейлер", trailer), ("Найти на Кинопоиске", watch)] if url]
+    links = [(text, url) for text, url in [("▶ Трейлер", trailer), ("Открыть на Кинопоиске", watch)] if url]
     for text, url in links:
         kb.button(text=text, url=url)
     return [len(links)] if links else []

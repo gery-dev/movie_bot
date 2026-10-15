@@ -8,7 +8,7 @@ Telegram-бот для персональных рекомендаций фил�
 |-------|------------|
 | `bot/` | Бот на aiogram: команды, клавиатуры, состояния диалога |
 | `recsys/` | Модели рекомендаций, профиль пользователя, MMR, объяснения |
-| `data_pipeline/` | Загрузка IMDb и MovieLens, клиенты TMDB и OMDb, импорт Letterboxd |
+| `data_pipeline/` | Загрузка IMDb и MovieLens, клиенты TMDB и OMDb, ID Кинопоиска из Wikidata, импорт Letterboxd |
 | `db/` | Схема БД и доступ к данным |
 | `notebooks/` | Анализ данных и офлайн-эксперименты |
 | `tests/` | Тесты pytest |
@@ -32,6 +32,7 @@ python -m data_pipeline.movielens download ml-latest-small  # оценки дл�
 python -m data_pipeline.movielens download ml-32m           # оценки для итоговых замеров (239 МБ)
 python -m data_pipeline.movielens link ml-latest-small      # сколько фильмов и оценок связалось с IMDb
 python -m data_pipeline.tmdb enrich                         # страна, язык, описание, постер из TMDB (~15 мин)
+python -m data_pipeline.kinopoisk                          # ID Кинопоиска из Wikidata для прямых ссылок (~1 мин)
 ```
 
 Ответы TMDB кэшируются в таблице `api_cache`: повторный запуск не обращается к API.
