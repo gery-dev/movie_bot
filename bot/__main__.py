@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from dotenv import load_dotenv
 
-from bot import analytics
+from bot import analytics, texts
 from bot.feedback import feedback_loop
 from bot.handlers import common, imports, lists, onboarding, recommend, together
 from bot.services import App
@@ -70,6 +70,8 @@ async def main() -> None:
     # together раньше onboarding: вход по ссылке-приглашению — это тоже /start, но с параметром
     dp.include_routers(together.router, onboarding.router, recommend.router, lists.router, imports.router, common.router)
     await bot.set_my_commands(COMMANDS)
+    await bot.set_my_description(texts.DESCRIPTION)
+    await bot.set_my_short_description(texts.SHORT_DESCRIPTION)
 
     feedback = asyncio.create_task(feedback_loop(bot, app))
     me = await bot.get_me()

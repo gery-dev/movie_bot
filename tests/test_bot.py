@@ -179,3 +179,9 @@ def test_analytics_writes_event(tmp_path):
     row = dict(conn.execute("SELECT user_id, kind, name, state, duration_ms, error FROM events").fetchone())
     assert row == {"user_id": 1, "kind": "command", "name": "today", "state": "Onboarding:genres",
                    "duration_ms": 12, "error": 0}
+
+
+def test_description_fits_telegram_limits():
+    from bot import texts
+    assert len(texts.DESCRIPTION) <= 512 and len(texts.SHORT_DESCRIPTION) <= 120
+    assert texts.WELCOME.startswith(texts.DESCRIPTION)
