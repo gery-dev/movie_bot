@@ -27,7 +27,7 @@ PEOPLE_NAV = (("Следующий этап: калибровка →", "people_
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext, app: App) -> None:
     """Новому — знакомство. Тому, кто его уже прошёл, /start ничего не сбрасывает (его легко нажать
-    случайно): только приветствие и команды. Пройти знакомство заново — /restart."""
+    случайно): только приветствие и команды. Уточнить вкус — /calibrate."""
     with app.conn:
         ensure_user(app.conn, message.from_user.id)
     done = app.conn.execute("SELECT onboarding_done FROM users WHERE user_id = ?",
@@ -39,28 +39,28 @@ async def start(message: Message, state: FSMContext, app: App) -> None:
     await begin_onboarding(message, state)
 
 
-@router.message(Command("restart"))
-async def restart(message: Message, state: FSMContext) -> None:
+@router.message(Command("calibrate"))
+async def calibrate(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(texts.RESTART_CONFIRM, reply_markup=nav_kb(("Да, пройти заново", "restart_yes"),
-                                                                     ("Отмена", "restart_no")))
+    await message.answer(texts.CALIBRATE_CONFIRM, reply_markup=nav_kb(("Да, уточнить", "calibrate_yes"),
+                                                                      ("Отмена", "calibrate_no")))
 
 
-@router.callback_query(NavCb.filter(F.a.in_({"restart_yes", "restart_no"})))
-async def restart_answer(callback: CallbackQuery, callback_data: NavCb, state: FSMContext) -> None:
+@router.callback_query(NavCb.filter(F.a.in_({"calibrate_yes", "calibrate_no"})))
+async def calibrate_answer(callback: CallbackQuery, callback_data: NavCb, state: FSMContext) -> None:
     await callback.answer()
-    if callback_data.a == "restart_no":
+    if callback_data.a == "calibrate_no":
         await callback.message.edit_text("Хорошо, всё остаётся как было.")
         return
     await callback.message.edit_reply_markup(reply_markup=None)
-    await begin_onboarding(callback.message, state)
+    await begin_onboarding(callback.message, state, texts.CALIBRATE_START)
 
 
-async def begin_onboarding(message: Message, state: FSMContext) -> None:
+async def begin_onboarding(message: Message, state: FSMContext, text: str = texts.WELCOME) -> None:
     await state.clear()
     await state.set_state(Onboarding.genres)
     await state.update_data(genres=[])
-    await message.answer(texts.WELCOME, reply_markup=genres_kb(set()))
+    await message.answer(text, reply_markup=genres_kb(set()))
 
 
 # --- шаг 1: жанры ---
