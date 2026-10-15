@@ -5,18 +5,6 @@ SUGGEST_MIN_FILMS = 3   # предлагать человека, если выс
 SUGGEST_MIN_RATING = 4
 
 
-def search_people(conn, query: str, limit: int = 10) -> list[dict]:
-    """Поиск по имени (имена в IMDb латиницей). Первыми — те, у кого больше известных фильмов."""
-    rows = conn.execute(
-        """SELECT p.nconst, p.name, group_concat(DISTINCT mp.role) AS roles, count(DISTINCT mp.tconst) AS films,
-                  sum(m.votes) AS fame
-           FROM people p JOIN movie_people mp USING (nconst) JOIN movies m USING (tconst)
-           WHERE p.name LIKE ? GROUP BY p.nconst ORDER BY fame DESC LIMIT ?""",
-        (f"%{query.strip()}%", limit),
-    ).fetchall()
-    return [{"nconst": r[0], "name": r[1], "roles": r[2].split(","), "films": r[3]} for r in rows]
-
-
 def add_favorite(conn, user_id: int, nconst: str, added_by: str = "manual") -> None:
     """added_by: manual — сам добавил, suggestion — согласился на предложение, declined — отказался."""
     ensure_user(conn, user_id)

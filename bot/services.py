@@ -11,10 +11,10 @@ from data_pipeline.movielens import load_ratings
 from data_pipeline.tmdb import TMDB
 from db.database import connect
 from recsys import calibration
-from recsys.favorites import search_people as search_people_db
 from recsys.models import ALS, Catalog
 from recsys.profile import ensure_user, rebuild_profile, record_rating, record_reaction, set_list
 from recsys.recommender import Recommender
+from recsys.search import NameIndex
 from recsys.sentiment import load as load_sentiment, sentiment
 
 log = logging.getLogger(__name__)
@@ -72,38 +72,36 @@ class App:
         self.last_rated: dict[int, tuple[str, float]] = {}  # пользователь → (фильм, время) для отзыва текстом
         self.carousels: dict[int, Carousel] = {}             # пользователь → подборка, которую он листает
         self.pending_text: dict[int, str] = {}               # текст, про который спросили «отзыв или поиск?»
-        self._titles = (self.movies.title_ru.fillna("") + " | " + self.movies.title.fillna("")).str.lower()
+        self._build_search()
 
     # --- поиск ---
 
+    def _build_search(self) -> None:
+        """Индексы нечёткого поиска: фильмы по трём названиям, люди по имени латиницей и русским вариантам."""
+        m = pd.read_sql("SELECT tconst, title_ru, title, original_title, votes FROM movies", self.conn)
+        self.film_index = NameIndex(m.tconst, m[["title_ru", "title", "original_title"]].values.tolist(), m.votes)
+        p = pd.read_sql(
+            """SELECT p.nconst, p.name, p.name_ru, p.aka_ru, count(DISTINCT mp.tconst) AS films, sum(m.votes) AS fame
+               FROM people p JOIN movie_people mp USING (nconst) JOIN movies m USING (tconst)
+               GROUP BY p.nconst""", self.conn)
+        variants = [[name, ru] + (aka.split("|") if isinstance(aka, str) else [])
+                    for name, ru, aka in zip(p.name, p.name_ru, p.aka_ru)]
+        self.people_index = NameIndex(p.nconst, variants, p.fame)
+        self.people_info = p.set_index("nconst")[["name", "films"]]
+
     def search_movies(self, query: str, limit: int = 5) -> list[tuple[str, str]]:
-        """[(tconst, «Название (год)»)]: сначала точное совпадение, потом начало названия,
-        потом вхождение в середину; внутри группы — самые известные первыми."""
-        q = query.strip().lower()
-        if len(q) < 2:
-            return []
-        hits = self.movies[self._titles.str.contains(q, regex=False)]
-        names = [hits.title_ru.fillna("").str.lower(), hits.title.fillna("").str.lower()]
-        exact = (names[0] == q) | (names[1] == q)
-        prefix = names[0].str.startswith(q) | names[1].str.startswith(q)
-        order = hits.assign(group=2 - exact.astype(int) - prefix.astype(int)).sort_values(
-            ["group", "votes"], ascending=[True, False])
-        return [(t, self.label(t)) for t in order.index[:limit]]
+        """[(tconst, «Название (год)»)] — с опечатками, по-русски и латиницей; при равном сходстве известнее выше."""
+        return [(t, self.label(t)) for t in self.film_index.search(query, limit)]
 
     async def search_people(self, query: str, limit: int = 5) -> list[dict]:
-        """По-русски ищем через TMDB (имена в IMDb латиницей), латиницей — прямо в БД."""
-        if not CYRILLIC.search(query):
-            return search_people_db(self.conn, query, limit)
-        found = await self.tmdb.search_person(query, limit)
-        self.conn.commit()  # кэш TMDB
-        result = []
-        for nconst, name in found:
-            row = self.conn.execute(
-                """SELECT p.name, count(DISTINCT mp.tconst) FROM people p JOIN movie_people mp USING (nconst)
-                   WHERE p.nconst = ?""", (nconst,)).fetchone()
-            if row and row[1]:
-                result.append({"nconst": nconst, "name": row[0], "films": row[1]})
-        return result
+        """Ищем у себя (имена латиницей и по-русски из Wikidata, опечатки прощаются). Если по-русски
+        никого нет — спрашиваем TMDB: там русские имена есть и у тех, кого нет в Wikidata."""
+        found = self.people_index.search(query, limit)
+        if not found and CYRILLIC.search(query):
+            found = [n for n, _ in await self.tmdb.search_person(query, limit) if n in self.people_info.index]
+            self.conn.commit()  # кэш TMDB
+        info = self.people_info
+        return [{"nconst": n, "name": info.at[n, "name"], "films": int(info.at[n, "films"])} for n in found]
 
     # --- описание фильма ---
 

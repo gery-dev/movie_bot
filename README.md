@@ -33,6 +33,7 @@ python -m data_pipeline.movielens download ml-32m           # оценки дл�
 python -m data_pipeline.movielens link ml-latest-small      # сколько фильмов и оценок связалось с IMDb
 python -m data_pipeline.tmdb enrich                         # страна, язык, описание, постер из TMDB (~15 мин)
 python -m data_pipeline.kinopoisk                          # ID Кинопоиска из Wikidata для прямых ссылок (~1 мин)
+python -m data_pipeline.people_ru                          # русские имена людей из Wikidata для поиска (~4 мин)
 ```
 
 Ответы TMDB кэшируются в таблице `api_cache`: повторный запуск не обращается к API.

@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS people (
     nconst      TEXT PRIMARY KEY,          -- IMDb ID, например nm0634240
     name        TEXT NOT NULL,
     birth_year  INTEGER,
-    death_year  INTEGER
+    death_year  INTEGER,
+    name_ru     TEXT,                      -- русское имя из Wikidata
+    aka_ru      TEXT                       -- другие русские написания через «|»
 );
 CREATE INDEX IF NOT EXISTS idx_people_name ON people(name);
 
