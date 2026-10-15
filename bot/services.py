@@ -1,4 +1,5 @@
 """Общие объекты бота: БД, рекомендательная модель, клиент TMDB и действия пользователя."""
+import asyncio
 import logging
 import re
 import sqlite3
@@ -8,11 +9,11 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from data_pipeline.movielens import load_ratings
-from data_pipeline.tmdb import TMDB
+from data_pipeline.tmdb import TMDB, movie_row
 from db.database import connect
 from recsys import calibration
 from recsys.models import ALS, Catalog
-from recsys.profile import ensure_user, rebuild_profile, record_rating, record_reaction, set_list
+from recsys.profile import ensure_user, excluded_films, rebuild_profile, record_rating, record_reaction, set_list
 from recsys.recommender import Recommender
 from recsys.search import NameIndex
 from recsys.sentiment import load as load_sentiment, sentiment
@@ -37,11 +38,12 @@ class Carousel:
     why: dict[str, str] = field(default_factory=dict)  # фильм → «Почему: …»
     query: str | None = None     # текст запроса, если это результаты поиска обычным текстом
     group: str | None = None     # имена участников, если это подборка для компании (/together)
+    kind: str | None = None      # new — новинки по вкусу (/new), cinema — сейчас в прокате (/cinema)
 
     @property
     def fixed(self) -> bool:
-        """Готовый список (фильмы человека, результаты запроса) — в конце не догружается."""
-        return bool(self.person or self.query or self.group)
+        """Готовый список (фильмы человека, результаты запроса, прокат) — в конце не догружается."""
+        return bool(self.person or self.query or self.group or self.kind == "cinema")
 
     @property
     def current(self) -> str:
@@ -102,6 +104,39 @@ class App:
             self.conn.commit()  # кэш TMDB
         info = self.people_info
         return [{"nconst": n, "name": info.at[n, "name"], "films": int(info.at[n, "films"])} for n in found]
+
+    # --- прокат ---
+
+    async def cinema_films(self, user_id: int) -> list[str]:
+        """Фильмы в прокате, самые обсуждаемые первыми, без уже оценённых, скрытых и недавно показанных.
+        Новинок, которых нет в выгрузке IMDb, добавляем в movies по карточке TMDB."""
+        skip = excluded_films(self.conn, user_id)
+        playing = await self.tmdb.now_playing()
+        known = dict(self.conn.execute(
+            f"SELECT tmdb_id, tconst FROM movies WHERE tmdb_id IN ({','.join('?' * len(playing))})",
+            [m["id"] for m in playing]).fetchall()) if playing else {}
+        missing = [m["id"] for m in playing if m["id"] not in known]
+        added = dict(zip(missing, await asyncio.gather(*(self._add_movie(i) for i in missing))))  # параллельно
+        films = []
+        for m in playing:
+            tconst = known.get(m["id"]) or added.get(m["id"])
+            if tconst and tconst not in skip and tconst not in films:
+                films.append(tconst)
+        self.conn.commit()  # кэш TMDB и новые фильмы
+        return films
+
+    async def _add_movie(self, tmdb_id: int) -> str | None:
+        row = movie_row(await self.tmdb.movie(tmdb_id))
+        if row is None:  # без IMDb ID фильм не связать с оценками и остальным каталогом
+            return None
+        tconst = row[0]
+        if tconst not in self.movies.index:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO movies (tconst, title, title_ru, year, runtime, genres, tmdb_id, country,
+                   language, overview_ru, poster_path, votes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""", row)
+            self.movies.loc[tconst, ["title", "title_ru", "year", "runtime", "genres", "votes"]] = \
+                [row[1], row[2], row[3], row[4], row[5], 0]
+        return tconst
 
     # --- описание фильма ---
 

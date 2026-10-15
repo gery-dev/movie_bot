@@ -185,3 +185,13 @@ def test_description_fits_telegram_limits():
     from bot import texts
     assert len(texts.DESCRIPTION) <= 512 and len(texts.SHORT_DESCRIPTION) <= 120
     assert texts.WELCOME.startswith(texts.DESCRIPTION)
+
+
+def test_tmdb_card_to_movie_row():
+    from data_pipeline.tmdb import movie_row
+    m = {"imdb_id": "tt9999999", "id": 42, "title": "Одиссея", "original_title": "The Odyssey",
+         "release_date": "2026-07-17", "runtime": 150, "genres": [{"id": 12, "name": "приключения"},
+                                                                  {"id": 10770, "name": "телефильм"}],
+         "origin_country": ["US"], "original_language": "en", "overview": "…", "poster_path": "/p.jpg"}
+    assert movie_row(m) == ("tt9999999", "The Odyssey", "Одиссея", 2026, 150, "Adventure", 42, "US", "en", "…", "/p.jpg")
+    assert movie_row({**m, "imdb_id": None}) is None

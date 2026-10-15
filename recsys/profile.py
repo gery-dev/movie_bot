@@ -30,6 +30,7 @@ SIGNALS = {
 }
 # тональность отзыва (−1…+1) — добавка к оценке: 5★ дают +1, восторженный отзыв ещё +0,25
 SENTIMENT_WEIGHT = 0.25
+REPEAT_PAUSE_DAYS = 30  # сколько не показывать снова «не смотрел» из калибровки и пролистанное
 REACTION_LISTS = {"seen": "seen", "later": "planned"}  # реакция → список пользователя
 
 
@@ -126,11 +127,19 @@ def set_list(conn, user_id: int, tconst: str, list_name: str) -> None:
 
 
 def excluded_films(conn, user_id: int) -> set[str]:
-    """Что не рекомендовать: оценённое, просмотренное и скрытое."""
+    """Что не рекомендовать. Навсегда: оценённое, просмотренное, скрытое, «не интересно» и «в планах»
+    (он уже в списке). На REPEAT_PAUSE_DAYS: «не смотрел» и «пропустить» в калибровке и показанное
+    в подборке без ответа — чтобы те же фильмы не возвращались сразу."""
+    pause = f"-{REPEAT_PAUSE_DAYS} days"
     rows = conn.execute(
-        """SELECT tconst FROM ratings WHERE user_id = ?
-           UNION SELECT tconst FROM user_lists WHERE user_id = ? AND list IN ('seen', 'hidden')""",
-        (user_id, user_id),
+        """SELECT tconst FROM ratings WHERE user_id = :u
+           UNION SELECT tconst FROM user_lists WHERE user_id = :u AND list IN ('seen', 'hidden', 'planned')
+           UNION SELECT tconst FROM reactions WHERE user_id = :u AND reaction = 'not_interested'
+           UNION SELECT tconst FROM reactions WHERE user_id = :u AND reaction IN ('not_seen', 'skip')
+                 AND created_at > datetime('now', :pause)
+           UNION SELECT tconst FROM recommendations WHERE user_id = :u AND (answer IS NULL OR answer = 'ignored')
+                 AND shown_at > datetime('now', :pause)""",
+        {"u": user_id, "pause": pause},
     )
     return {r[0] for r in rows}
 

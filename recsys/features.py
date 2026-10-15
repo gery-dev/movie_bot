@@ -106,7 +106,14 @@ def load_embeddings(tconsts: list[str]) -> np.ndarray:
     """Эмбеддинги в порядке tconsts (строки нормированы)."""
     ids = EMB_IDS_PATH.read_text(encoding="utf-8").split("\n")
     index = {t: i for i, t in enumerate(ids)}
-    return np.load(EMB_PATH)[[index[t] for t in tconsts]]
+    emb = np.load(EMB_PATH)
+    # фильмы, добавленные после расчёта (например, из проката), получают нулевой вектор
+    out = np.zeros((len(tconsts), emb.shape[1]), dtype=emb.dtype)
+    known = [(j, index[t]) for j, t in enumerate(tconsts) if t in index]
+    if known:
+        rows, src = zip(*known)
+        out[list(rows)] = emb[list(src)]
+    return out
 
 
 if __name__ == "__main__":

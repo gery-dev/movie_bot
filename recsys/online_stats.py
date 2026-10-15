@@ -11,7 +11,8 @@ import pandas as pd
 
 from db.database import ROOT, connect
 
-MODES = {"recommend": "/recommend (по вкусу)", "today": "/today (под настроение)", "query": "поиск текстом"}
+MODES = {"recommend": "/recommend (по вкусу)", "today": "/today (под настроение)", "query": "поиск текстом",
+         "new": "/new (новинки)", "cinema": "/cinema (прокат)"}
 ANSWERS = {"rated": "оценил", "not_interested": "не интересно", "later": "позже", "hidden": "скрыл",
            "seen": "уже видел", "ignored": "без ответа (неделя)", None: "ещё без ответа"}
 

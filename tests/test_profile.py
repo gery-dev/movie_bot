@@ -283,3 +283,23 @@ def test_calibration_is_diverse(conn):
     assert len(set(shown)) == 4
     genres = set().union(*pool.loc[shown].genre_set)
     assert len(genres) >= 5  # четыре фильма — не меньше пяти разных жанров
+
+
+def test_excluded_films_permanent_and_paused(conn):
+    record_reaction(conn, USER, "tt01", "not_interested")
+    record_reaction(conn, USER, "tt02", "not_seen")
+    record_reaction(conn, USER, "tt03", "not_seen")
+    conn.execute("UPDATE reactions SET created_at = datetime('now', '-40 days') WHERE tconst = 'tt03'")
+    conn.execute("INSERT INTO recommendations (user_id, tconst) VALUES (?, 'tt04')", (USER,))
+    conn.execute("INSERT INTO recommendations (user_id, tconst, shown_at) VALUES (?, 'tt05', '2000-01-01 00:00:00')",
+                 (USER,))
+    skip = excluded_films(conn, USER)
+    assert {"tt01", "tt02", "tt04"} <= skip          # «не интересно» навсегда, свежие «не смотрел» и показы — на паузе
+    assert not {"tt03", "tt05"} & skip               # через 30 дней снова можно
+
+
+def test_recency_and_new_only(conn):
+    from recsys.recommender import recency
+    assert list(recency(np.array([1990, 2026, np.nan]), now_year=2026)) == [0.0, 1.0, 0.0]
+    rec = Recommender(conn)
+    assert set(rec.recommend(conn, USER, k=5, min_year=2020).tconst) == {"tt03", "tt09"}

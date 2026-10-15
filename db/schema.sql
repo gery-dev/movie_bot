@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS recommendations (
     shown_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     asked_at    TEXT,                      -- когда бот спросил, посмотрел ли
     answer      TEXT,                      -- rated | seen | not_interested | later | hidden | ignored
-    mode        TEXT                       -- recommend | today | query
+    mode        TEXT                       -- recommend | today | query | new | cinema
 );
 CREATE INDEX IF NOT EXISTS idx_recommendations_open ON recommendations(answer, shown_at);
 

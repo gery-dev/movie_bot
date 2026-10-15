@@ -1,5 +1,7 @@
 """Подборка (/recommend) — одна карточка, которая листается на месте; опрос на сегодня (/today);
-ответы на карточках; отзыв и автопредложение любимых."""
+новинки (/new) и прокат (/cinema); ответы на карточках; отзыв и автопредложение любимых."""
+from datetime import datetime
+
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
@@ -13,6 +15,7 @@ from bot.keyboards import MovieCb, NavCb, PersonCb, STATUS, TodayCb, movie_kb, n
 from bot.services import App, Carousel
 from bot.states import Review, Today
 from bot.texts import films_word
+from recsys.recommender import NEW_YEARS
 from recsys.favorites import add_favorite, suggest_favorites
 from recsys.today import QUESTIONS, load_daily, load_last, save_daily, summary
 
@@ -25,6 +28,12 @@ QUESTION_TEXT = {
 }
 REACTIONS = {"sn": "seen", "ni": "not_interested", "lt": "later"}
 NOTHING_MORE = "Пока это всё. Оцени пару фильмов или смени настроение (/today) — и я подберу новые."
+CINEMA_WHY = "Почему: сейчас в прокате, о нём много говорят"
+
+
+def new_since() -> int:
+    """/new — фильмы за последние NEW_YEARS календарных лет, включая текущий."""
+    return datetime.now().year - NEW_YEARS + 1
 
 
 # --- подборка: /recommend — по вкусу, /today — по вкусу с приоритетом настроения ---
@@ -38,6 +47,24 @@ async def start_recommendations(bot: Bot, user_id: int, app: App, answers: dict 
                                reply_markup=nav_kb(("Пройти опрос заново", "today_again")))
         return
     await start_carousel(bot, user_id, app, Carousel(films=films, answers=answers, why=dict(zip(df.tconst, df.why))))
+
+
+async def start_new(bot: Bot, user_id: int, app: App) -> None:
+    """Новинки последних лет по вкусу — та же подборка, что /recommend, но только свежие фильмы."""
+    df = app.rec.recommend(app.conn, user_id, BATCH, min_year=new_since())
+    if df.empty:
+        await bot.send_message(user_id, "Новинок под твой вкус пока не нашлось. Загляни в /cinema — что сейчас в прокате.")
+        return
+    await start_carousel(bot, user_id, app, Carousel(films=df.tconst.tolist(), kind="new",
+                                                     why=dict(zip(df.tconst, df.why))))
+
+
+async def start_cinema(bot: Bot, user_id: int, app: App) -> None:
+    films = await app.cinema_films(user_id)
+    if not films:
+        await bot.send_message(user_id, "Всё, что сейчас в прокате, ты уже видел в подборках. Загляни позже.")
+        return
+    await start_carousel(bot, user_id, app, Carousel(films=films, kind="cinema", why=dict.fromkeys(films, CINEMA_WHY)))
 
 
 async def start_person_films(bot: Bot, user_id: int, app: App, name: str, films: list[str]) -> None:
@@ -70,6 +97,8 @@ def nothing_more(c: Carousel) -> str:
         return "Это все варианты по запросу. Можно написать другой — просто текстом."
     if c.person:
         return f"Это все фильмы {c.person}, которых ты ещё не видел."
+    if c.kind == "cinema":
+        return "Это все фильмы в прокате. Новинки последних лет по твоему вкусу — /new."
     return NOTHING_MORE
 
 
@@ -84,6 +113,10 @@ async def render(bot: Bot, user_id: int, app: App, new_message: bool = False, ke
         note = f"По запросу «{c.query}» · фильм {c.idx + 1} из {len(c.films)}"
     elif c.person:
         note = f"{c.person} · фильм {c.idx + 1} из {len(c.films)}"
+    elif c.kind == "cinema":
+        note = f"Сейчас в прокате · фильм {c.idx + 1} из {len(c.films)}"
+    elif c.kind == "new":
+        note = f"Новинки с {new_since()} года по твоему вкусу · фильм {c.idx + 1}"
     elif c.answers is None:
         note = f"Подборка по твоему вкусу · фильм {c.idx + 1}"
         note += " · под настроение — /today" if c.idx == 0 else ""
@@ -113,7 +146,8 @@ async def render(bot: Bot, user_id: int, app: App, new_message: bool = False, ke
     if new_message and old_id and old_id != c.message_id:
         await _drop_keyboard(bot, user_id, old_id)
     if t not in c.logged and not (c.person or c.group):  # фильмы человека — не рекомендация, «посмотрел?» по ним не спрашиваем
-        app.log_shown(user_id, [t], "query" if c.query else "today" if c.answers is not None else "recommend")
+        mode = c.kind or ("query" if c.query else "today" if c.answers is not None else "recommend")
+        app.log_shown(user_id, [t], mode)
         c.logged.add(t)
 
 
@@ -121,7 +155,8 @@ async def advance(bot: Bot, user_id: int, app: App, new_message: bool = False) -
     """Следующий фильм; в конце подборки догружаем ещё. False — предложить больше нечего."""
     c = app.carousels[user_id]
     if c.idx + 1 >= len(c.films) and not c.fixed:
-        more = app.rec.recommend(app.conn, user_id, len(c.films) + BATCH, answers=c.answers)
+        more = app.rec.recommend(app.conn, user_id, len(c.films) + BATCH, answers=c.answers,
+                                 min_year=new_since() if c.kind == "new" else None)
         c.why.update(dict(zip(more.tconst, more.why)))
         c.films += [t for t in more.tconst if t not in c.films]
     if c.idx + 1 >= len(c.films):
@@ -148,6 +183,18 @@ def _carousel_of(callback: CallbackQuery, app: App) -> Carousel | None:
 async def recommend(message: Message, state: FSMContext, bot: Bot, app: App) -> None:
     await state.clear()
     await start_recommendations(bot, message.from_user.id, app)
+
+
+@router.message(Command("new"))
+async def new_films(message: Message, state: FSMContext, bot: Bot, app: App) -> None:
+    await state.clear()
+    await start_new(bot, message.from_user.id, app)
+
+
+@router.message(Command("cinema"))
+async def cinema(message: Message, state: FSMContext, bot: Bot, app: App) -> None:
+    await state.clear()
+    await start_cinema(bot, message.from_user.id, app)
 
 
 @router.callback_query(NavCb.filter(F.a.in_({"next", "prev"})))

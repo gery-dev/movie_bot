@@ -54,10 +54,29 @@ MMR_LAMBDA = 0.6        # доля «подходит» против «не по
 MMR_POOL = 100          # из скольких лучших выбирать разнообразную выдачу
 GENRE_SIM_WEIGHT = 0.3  # доля похожести по жанрам (остальное — режиссёр, актёры, десятилетие…)
 GROUP_MIN_WEIGHT = 0.5  # /together: доля «минимума по участникам» против среднего
+# Свежесть: r растёт от 0 у фильмов старше RECENT_SPAN лет до 1 у фильмов этого года; W_NEW · r
+# прибавляется на шаге 2, как пожелания на сегодня (на шаге 1 прибавка тонет в разбросе долгосрочной оценки).
+# Мягкий сдвиг по решению пользователя. 40 пользователей MovieLens по 10 оценок, топ-10
+# (медиана года / доля фильмов с 2016 года / доля до 2000):
+#   до правки ALS (новые фильмы получали минимум ALS) — 1994 / 0% / 73%;
+#   UNKNOWN_POP = 0,2:  W_NEW = 0,1 — 1999 / 12% / 54%;  0,2 — 2009 / 27% / 30%;  0,25 — 2010 / 36% / 20%;
+#   0,3 — 2014 / 44% / 12%;  0,35 — 2016 / 50% / 6%. Берём 0,25: новые фильмы — треть выдачи, классика остаётся.
+# UNKNOWN_POP — доля популярности вместо ALS у фильмов, которых нет в MovieLens. В /new у этих 40 человек
+#   0,5 — 16 разных фильмов на всех (одни хиты), 0,3 — 29, 0,2 — 46; медиана голосов IMDb везде ~575 тыс.
+W_NEW = 0.25
+UNKNOWN_POP = 0.2
+RECENT_SPAN = 30
+NEW_YEARS = 5           # /new — фильмы за столько последних календарных лет, включая текущий
+
+
+def recency(years: np.ndarray, now_year: int | None = None) -> np.ndarray:
+    now_year = now_year or datetime.now().year
+    r = (np.asarray(years, float) - (now_year - RECENT_SPAN)) / RECENT_SPAN
+    return np.nan_to_num(np.clip(r, 0, 1))
 
 
 def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: float,
-           n: int = CANDIDATES) -> np.ndarray:
+           n: int = CANDIDATES, new: np.ndarray | None = None, w_new: float = 0.0) -> np.ndarray:
     """Шаг 2: взять n лучших по base (-inf — исключённые) и переставить их с учётом пожеланий на сегодня
     и любимых людей. Остальные фильмы получают -inf."""
     finite = np.flatnonzero(np.isfinite(base))
@@ -70,6 +89,8 @@ def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: fl
     s = _unit(-ranks) + c * fav[cand]
     if b and np.ptp(today[cand]) > 0:
         s += b * _unit(today[cand])
+    if w_new and new is not None and np.ptp(new[cand]) > 0:
+        s += w_new * _unit(new[cand])
     score[cand] = s
     return score
 
@@ -91,6 +112,7 @@ class Recommender:
         self.names = dict(conn.execute("SELECT nconst, name FROM people").fetchall())
         genres = self.movies.genres.fillna("").str.split(",").map(lambda g: [x for x in g if x])
         self.genre_matrix = normalize(MultiLabelBinarizer(sparse_output=True).fit_transform(genres).astype(float)).tocsr()
+        self.recency = recency(self.movies.year.to_numpy(float))
         self._embeddings = self._text_model = None
         self.cf_known = np.ones(len(self.catalog), bool)
         if als is not None and ml_ratings is not None:
@@ -107,6 +129,8 @@ class Recommender:
         profile_score = _unit(self.profiler.scores(profile))
         parts = {"total": profile_score, "profile": profile, "profile_score": profile_score, "cf": None}
         ratings = conn.execute("SELECT tconst, rating FROM ratings WHERE user_id = ?", (user_id,)).fetchall()
+        # фильмы, добавленные после запуска (например, из проката), модели ещё не известны
+        ratings = [(t, r) for t, r in ratings if t in self.catalog.index]
         if self.als is not None and len(ratings) >= MIN_RATINGS_FOR_CF:
             row = sparse.csr_matrix(
                 ([float(r) for _, r in ratings], ([0] * len(ratings), self.catalog.positions([t for t, _ in ratings]))),
@@ -114,7 +138,12 @@ class Recommender:
             )
             factors = self.als.model.recalculate_user(0, row)
             cf = _unit(np.where(self.cf_known, self.als.model.item_factors @ np.asarray(factors).ravel(), -np.inf))
-            parts.update(cf=cf, total=CF_WEIGHT * cf + (1 - CF_WEIGHT) * profile_score)
+            # фильмы, которых нет в MovieLens (всё новее 2018 года), ALS не знает. Раньше они получали минимум
+            # ALS и почти не попадали в выдачу; теперь вместо ALS у них взвешенный рейтинг IMDb — ALS тоже
+            # тянет вверх известные фильмы, а с одним профилем наверх лезли малоизвестные новинки
+            mix = CF_WEIGHT * cf + (1 - CF_WEIGHT) * profile_score
+            unknown = UNKNOWN_POP * _unit(self.popularity) + (1 - UNKNOWN_POP) * profile_score
+            parts.update(cf=cf, total=np.where(self.cf_known, mix, unknown))
         # пока оценок мало, вкус известен плохо — подмешиваем популярность: её доля N0 / (n + N0)
         if POPULARITY_PRIOR:
             share = POPULARITY_PRIOR / (len(ratings) + POPULARITY_PRIOR)
@@ -159,9 +188,10 @@ class Recommender:
         return cand[chosen]
 
     def recommend(self, conn, user_id: int, k: int = 5, answers: dict | None = None,
-                  diverse: bool = True) -> pd.DataFrame:
+                  diverse: bool = True, min_year: int | None = None) -> pd.DataFrame:
         """Топ-k фильмов с объяснением. answers — опрос на сегодня (/today); без него — обычная
-        подборка по вкусу (/recommend). diverse=False — без MMR (для сравнения)."""
+        подборка по вкусу (/recommend). min_year — только фильмы не старше этого года (/new).
+        diverse=False — без MMR (для сравнения)."""
         answers = answers or {}
         parts = self.long_term_parts(conn, user_id)
         long_term = parts["total"]
@@ -172,11 +202,16 @@ class Recommender:
         ok = np.ones(len(self.catalog), bool)
         if answers:
             ok &= today_filter(self.movies, answers)
+        if min_year:
+            ok &= self.movies.year.to_numpy(float) >= min_year
         skip = excluded_films(conn, user_id)
         if skip:
             ok[self.catalog.positions([t for t in skip if t in self.catalog.index])] = False
         base = np.where(ok, A * long_term + C * fav, -np.inf)
-        score = rerank(base, today, B, fav, C)
+        # если в /today выбрана эпоха, свежесть ей не мешает
+        # в /new и так одни новые фильмы — там свежесть только тянула бы к самому последнему году
+        w_new = 0.0 if answers.get("era") not in (None, "any") or min_year else W_NEW
+        score = rerank(base, today, B, fav, C, new=self.recency, w_new=w_new)
 
         if diverse:
             top = self.diversify(score, k)
@@ -225,7 +260,7 @@ class Recommender:
     @property
     def embeddings(self) -> np.ndarray:
         if self._embeddings is None:
-            self._embeddings = load_embeddings(self.catalog.ids)
+            self._embeddings = load_embeddings(self.catalog.ids)  # у фильмов без описания — нули
         return self._embeddings
 
     def text_model(self):
