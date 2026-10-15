@@ -10,7 +10,7 @@ import sqlite3
 from db.database import DB_PATH, ROOT
 
 CLEAN_PATH = ROOT / "data" / "movies-clean.db"
-USER_TABLES = ["survey", "recommendations", "group_members", "groups", "user_names", "favorites", "user_lists",
+USER_TABLES = ["events", "survey", "recommendations", "group_members", "groups", "user_names", "favorites", "user_lists",
                "daily_session", "user_profile", "reactions", "ratings", "users"]  # порядок — из-за внешних ключей
 
 

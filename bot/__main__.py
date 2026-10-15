@@ -10,6 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from dotenv import load_dotenv
 
+from bot import analytics
 from bot.feedback import feedback_loop
 from bot.handlers import common, imports, lists, onboarding, recommend, together
 from bot.services import App
@@ -54,6 +55,8 @@ async def main() -> None:
     dp = Dispatcher()
     dp["app"] = app
 
+    dp.update.outer_middleware(analytics.middleware(app.conn))
+
     @dp.update.outer_middleware()
     async def keep_today_alive(handler, event, data):
         """Любое действие в боте продлевает ответы /today: они сгорают только после 22 часов тишины."""
@@ -72,7 +75,8 @@ async def main() -> None:
     me = await bot.get_me()
     log.info("бот @%s запущен", me.username)
     try:
-        await dp.start_polling(bot)
+        # my_chat_member — чтобы видеть, кто остановил бота (обработчика нет, сам Telegram его не пришлёт)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types() + ["my_chat_member"])
     finally:
         feedback.cancel()
         await app.tmdb.close()

@@ -52,12 +52,13 @@ def test_calibration_card_buttons():
     assert "Не смотрел" in labels and "Пропустить" in labels and "Скрыть навсегда" not in labels
 
 
-def test_carousel_card_has_kinopoisk_and_nav_row_last():
+def test_carousel_card_hide_below_nav():
     kb = movie_kb("tt0816692", "rec", trailer="https://youtu.be/x", watch=kinopoisk_url(MOVIE),
-                  nav=[("← Назад", "prev"), ("Далее →", "next")])
+                  nav=[("← Назад", "prev"), ("Далее →", "next")], extra=[("Другое настроение", "mood")])
     rows = [[b.text for b in row] for row in kb.inline_keyboard]
     assert rows[0] == ["▶ Трейлер", "Открыть на Кинопоиске"]
-    assert rows[-1] == ["← Назад", "Далее →"]
+    assert rows[2:] == [["Не интересно", "Посмотрю позже"], ["← Назад", "Далее →"], ["Скрыть навсегда"],
+                        ["Другое настроение"]]
 
 
 def test_status_keeps_links_and_nav():
@@ -145,3 +146,36 @@ def test_old_database_gets_new_column(tmp_path):
     old.close()
     conn = connect(tmp_path / "old.db")
     assert "mode" in {r[1] for r in conn.execute("PRAGMA table_info(recommendations)")}
+
+
+def _update(**kw):
+    from datetime import datetime
+
+    from aiogram.types import CallbackQuery, Chat, Document, Message, Update, User
+    user = User(id=1, is_bot=False, first_name="T")
+    chat = Chat(id=1, type="private")
+    if "callback" in kw:
+        return Update(update_id=1, callback_query=CallbackQuery(id="1", from_user=user, chat_instance="c",
+                                                                data=kw["callback"]))
+    doc = Document(file_id="f", file_unique_id="u", mime_type="application/zip") if kw.get("doc") else None
+    return Update(update_id=1, message=Message(message_id=1, date=datetime.now(), chat=chat, from_user=user,
+                                               text=kw.get("text"), document=doc))
+
+
+def test_analytics_keeps_no_message_text():
+    from bot.analytics import describe
+    assert describe(_update(text="/start@movies_selection_bot g_42")) == ("command", "start", "g_42")
+    assert describe(_update(text="/recommend")) == ("command", "recommend", None)
+    assert describe(_update(text="мой секретный запрос")) == ("text", None, None)
+    assert describe(_update(doc=True)) == ("file", "application/zip", None)
+    assert describe(_update(callback="mv:rate:tt0816692:4")) == ("callback", "mv", "rate:tt0816692:4")
+
+
+def test_analytics_writes_event(tmp_path):
+    from bot.analytics import log_event
+    from db.database import connect
+    conn = connect(tmp_path / "t.db")
+    log_event(conn, 1, _update(text="/today"), "Onboarding:genres", 12, False)
+    row = dict(conn.execute("SELECT user_id, kind, name, state, duration_ms, error FROM events").fetchone())
+    assert row == {"user_id": 1, "kind": "command", "name": "today", "state": "Onboarding:genres",
+                   "duration_ms": 12, "error": 0}

@@ -88,9 +88,14 @@ def movie_kb(tconst: str, ctx: str, trailer: str | None = None, watch: str | Non
         kb.button(text="Вернуть в подборки", callback_data=MovieCb(a="uh", t=tconst, c=ctx))
         sizes += [5, 1]
     else:
-        for a, label in ACTIONS.items():
+        # «Скрыть навсегда» — под навигацией, чтобы не нажать случайно, листая подборку
+        *answers, hide = ACTIONS.items()
+        for a, label in answers:
             kb.button(text=label, callback_data=MovieCb(a=a, t=tconst, c=ctx))
-        sizes += [5, 2, 1]
+        sizes += [5, len(answers)] + _nav(kb, nav)
+        kb.button(text=hide[1], callback_data=MovieCb(a=hide[0], t=tconst, c=ctx))
+        kb.adjust(*sizes, 1, *_nav(kb, None, extra))
+        return kb.as_markup()
     kb.adjust(*sizes, *_nav(kb, nav, extra))
     return kb.as_markup()
 

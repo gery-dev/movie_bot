@@ -143,6 +143,21 @@ CREATE TABLE IF NOT EXISTS survey (
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- журнал действий для аналитики: каждое обновление от Telegram, без текста сообщений
+CREATE TABLE IF NOT EXISTS events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,                   -- без ссылки на users: событие бывает раньше /start
+    ts          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+    kind        TEXT NOT NULL,             -- command | callback | text | file | member | other
+    name        TEXT,                      -- команда, префикс кнопки, новый статус чата
+    detail      TEXT,                      -- остальные данные кнопки или параметр команды
+    state       TEXT,                      -- шаг сценария (состояние FSM) в момент действия
+    duration_ms INTEGER,                   -- сколько бот обрабатывал
+    error       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, ts);
+
 -- Кэш внешних API ------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS api_cache (
