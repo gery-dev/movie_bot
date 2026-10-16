@@ -25,12 +25,6 @@ IMAGE_URL = "https://image.tmdb.org/t/p/w500"
 CONCURRENCY = 20  # TMDB допускает около 50 запросов в секунду
 BATCH = 500
 REGION = "RU"  # для какой страны храним сервисы просмотра
-NOW_PLAYING_PAGES = 2     # по 20 фильмов: сейчас в прокате, самые обсуждаемые первыми
-NOW_PLAYING_HOURS = 12    # как часто обновлять список проката
-# жанры TMDB → названия IMDb, как в таблице movies (у «TV Movie» пары нет)
-GENRES = {28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary",
-          18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
-          9648: "Mystery", 10749: "Romance", 878: "Sci-Fi", 53: "Thriller", 10752: "War", 37: "Western"}
 YOUTUBE_RECHECK_DAYS = 30  # через сколько дней заново проверять, что ролик на YouTube ещё доступен
 CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
 
@@ -94,14 +88,6 @@ class TMDB:
             f"/movie/{tmdb_id}", shrink=shrink_movie, language="ru-RU",
             append_to_response="videos,watch/providers", include_video_language="ru,en",
         )
-
-    async def now_playing(self) -> list[dict]:
-        """Фильмы в прокате по всему миру (без привязки к стране — в российском списке почти одни местные
-        премьеры), отсортированные по популярности TMDB: просмотры страниц, поиски, добавления в списки."""
-        pages = [await self.get("/movie/now_playing", max_age_hours=NOW_PLAYING_HOURS, language="ru-RU", page=p)
-                 for p in range(1, NOW_PLAYING_PAGES + 1)]
-        films = {m["id"]: m for page in pages for m in page.get("results", [])}
-        return sorted(films.values(), key=lambda m: -m.get("popularity", 0))
 
     async def trailer_url(self, movie: dict) -> str | None:
         """Первый доступный трейлер: сначала русские, потом английские. None — рабочего нет."""
@@ -171,21 +157,6 @@ def watch_providers(movie: dict) -> list[str]:
     region_data = movie.get("watch/providers", {}).get("results", {}).get(REGION, {})
     names = [p["provider_name"] for kind in ("flatrate", "rent", "buy") for p in region_data.get(kind, [])]
     return list(dict.fromkeys(names))
-
-
-def movie_row(m: dict) -> tuple | None:
-    """Карточка TMDB → строка movies (для новинки, которой ещё нет в выгрузке IMDb). Рейтинга IMDb
-    у неё ещё нет — rating пустой, votes = 0."""
-    if not m.get("imdb_id"):
-        return None
-    title = m.get("title") or ""
-    return (
-        m["imdb_id"], m.get("original_title") or title, title if CYRILLIC.search(title) else None,
-        int(m["release_date"][:4]) if m.get("release_date") else None, m.get("runtime") or None,
-        ",".join(GENRES[g["id"]] for g in m.get("genres", []) if g["id"] in GENRES) or None,
-        m["id"], ",".join(m.get("origin_country") or []) or None, m.get("original_language") or None,
-        m.get("overview") or None, m.get("poster_path") or None,
-    )
 
 
 async def enrich_one(tmdb: TMDB, tconst: str, title_ru: str | None) -> tuple | None:

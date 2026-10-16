@@ -112,7 +112,7 @@ def test_films_word(n, word):
     assert films_word(n) == word
 
 
-def test_survey_asked_after_5_and_20_ratings(tmp_path):
+def test_survey_asked_after_3_and_20_ratings_once(tmp_path):
     from types import SimpleNamespace
 
     from bot.handlers.recommend import survey_due
@@ -121,17 +121,20 @@ def test_survey_asked_after_5_and_20_ratings(tmp_path):
 
     conn = connect(tmp_path / "t.db")
     conn.executemany("INSERT INTO movies (tconst, title) VALUES (?, ?)", [(f"tt{i:02d}", str(i)) for i in range(25)])
-    app = SimpleNamespace(conn=conn)
-    for i in range(4):
+    app = SimpleNamespace(conn=conn, survey_offered=set())
+    for i in range(2):
         record_rating(conn, 1, f"tt{i:02d}", 4, "recommendation")
     assert survey_due(app, 1) is None
-    record_rating(conn, 1, "tt04", 4, "recommendation")
-    assert survey_due(app, 1) == 5
-    conn.execute("INSERT INTO survey (user_id, wave, score) VALUES (1, 5, 4)")
+    record_rating(conn, 1, "tt02", 4, "recommendation")
+    assert survey_due(app, 1) == 3
+    app.survey_offered.add((1, 3))  # спросили, но не ответил — после следующих оценок не повторяем
+    record_rating(conn, 1, "tt03", 4, "recommendation")
     assert survey_due(app, 1) is None
-    for i in range(5, 20):
+    for i in range(4, 20):
         record_rating(conn, 1, f"tt{i:02d}", 4, "recommendation")
     assert survey_due(app, 1) == 20
+    conn.execute("INSERT INTO survey (user_id, wave, score) VALUES (1, 20, 4)")
+    assert survey_due(app, 1) is None
 
 
 def test_old_database_gets_new_column(tmp_path):
@@ -185,13 +188,3 @@ def test_description_fits_telegram_limits():
     from bot import texts
     assert len(texts.DESCRIPTION) <= 512 and len(texts.SHORT_DESCRIPTION) <= 120
     assert texts.WELCOME.startswith(texts.DESCRIPTION)
-
-
-def test_tmdb_card_to_movie_row():
-    from data_pipeline.tmdb import movie_row
-    m = {"imdb_id": "tt9999999", "id": 42, "title": "Одиссея", "original_title": "The Odyssey",
-         "release_date": "2026-07-17", "runtime": 150, "genres": [{"id": 12, "name": "приключения"},
-                                                                  {"id": 10770, "name": "телефильм"}],
-         "origin_country": ["US"], "original_language": "en", "overview": "…", "poster_path": "/p.jpg"}
-    assert movie_row(m) == ("tt9999999", "The Odyssey", "Одиссея", 2026, 150, "Adventure", 42, "US", "en", "…", "/p.jpg")
-    assert movie_row({**m, "imdb_id": None}) is None

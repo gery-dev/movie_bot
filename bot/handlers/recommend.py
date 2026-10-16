@@ -1,5 +1,5 @@
 """Подборка (/recommend) — одна карточка, которая листается на месте; опрос на сегодня (/today);
-новинки (/new) и прокат (/cinema); ответы на карточках; отзыв и автопредложение любимых."""
+новинки (/new); ответы на карточках; отзыв и автопредложение любимых."""
 from datetime import datetime
 
 from aiogram import Bot, F, Router
@@ -28,7 +28,6 @@ QUESTION_TEXT = {
 }
 REACTIONS = {"sn": "seen", "ni": "not_interested", "lt": "later"}
 NOTHING_MORE = "Пока это всё. Оцени пару фильмов или смени настроение (/today) — и я подберу новые."
-CINEMA_WHY = "Почему: сейчас в прокате, о нём много говорят"
 
 
 def new_since() -> int:
@@ -53,18 +52,10 @@ async def start_new(bot: Bot, user_id: int, app: App) -> None:
     """Новинки последних лет по вкусу — та же подборка, что /recommend, но только свежие фильмы."""
     df = app.rec.recommend(app.conn, user_id, BATCH, min_year=new_since())
     if df.empty:
-        await bot.send_message(user_id, "Новинок под твой вкус пока не нашлось. Загляни в /cinema — что сейчас в прокате.")
+        await bot.send_message(user_id, "Новинок под твой вкус пока не нашлось. Загляни позже или открой /recommend.")
         return
     await start_carousel(bot, user_id, app, Carousel(films=df.tconst.tolist(), kind="new",
                                                      why=dict(zip(df.tconst, df.why))))
-
-
-async def start_cinema(bot: Bot, user_id: int, app: App) -> None:
-    films = await app.cinema_films(user_id)
-    if not films:
-        await bot.send_message(user_id, "Всё, что сейчас в прокате, ты уже видел в подборках. Загляни позже.")
-        return
-    await start_carousel(bot, user_id, app, Carousel(films=films, kind="cinema", why=dict.fromkeys(films, CINEMA_WHY)))
 
 
 async def start_person_films(bot: Bot, user_id: int, app: App, name: str, films: list[str]) -> None:
@@ -97,8 +88,6 @@ def nothing_more(c: Carousel) -> str:
         return "Это все варианты по запросу. Можно написать другой — просто текстом."
     if c.person:
         return f"Это все фильмы {c.person}, которых ты ещё не видел."
-    if c.kind == "cinema":
-        return "Это все фильмы в прокате. Новинки последних лет по твоему вкусу — /new."
     return NOTHING_MORE
 
 
@@ -113,8 +102,6 @@ async def render(bot: Bot, user_id: int, app: App, new_message: bool = False, ke
         note = f"По запросу «{c.query}» · фильм {c.idx + 1} из {len(c.films)}"
     elif c.person:
         note = f"{c.person} · фильм {c.idx + 1} из {len(c.films)}"
-    elif c.kind == "cinema":
-        note = f"Сейчас в прокате · фильм {c.idx + 1} из {len(c.films)}"
     elif c.kind == "new":
         note = f"Новинки с {new_since()} года по твоему вкусу · фильм {c.idx + 1}"
     elif c.answers is None:
@@ -145,7 +132,7 @@ async def render(bot: Bot, user_id: int, app: App, new_message: bool = False, ke
     c.message_id = await show(bot, user_id, card, kb, None if new_message else old_id)
     if new_message and old_id and old_id != c.message_id:
         await _drop_keyboard(bot, user_id, old_id)
-    if t not in c.logged and not (c.person or c.group):  # фильмы человека — не рекомендация, «посмотрел?» по ним не спрашиваем
+    if t not in c.logged and not (c.person or c.group):  # фильмы человека — не рекомендация, в журнал показов не пишем
         mode = c.kind or ("query" if c.query else "today" if c.answers is not None else "recommend")
         app.log_shown(user_id, [t], mode)
         c.logged.add(t)
@@ -189,12 +176,6 @@ async def recommend(message: Message, state: FSMContext, bot: Bot, app: App) -> 
 async def new_films(message: Message, state: FSMContext, bot: Bot, app: App) -> None:
     await state.clear()
     await start_new(bot, message.from_user.id, app)
-
-
-@router.message(Command("cinema"))
-async def cinema(message: Message, state: FSMContext, bot: Bot, app: App) -> None:
-    await state.clear()
-    await start_cinema(bot, message.from_user.id, app)
 
 
 @router.callback_query(NavCb.filter(F.a.in_({"next", "prev"})))
@@ -341,9 +322,9 @@ async def card_answer(callback: CallbackQuery, callback_data: MovieCb, state: FS
 # --- отзыв, затем продолжение ---
 
 async def after_review(bot: Bot, user_id: int, app: App, in_carousel: bool) -> None:
-    """Что дальше после отзыва: предложить любимых, при случае — опрос, и показать следующий фильм подборки."""
+    """Что дальше после отзыва: предложить любимых, показать следующий фильм подборки и при случае — опрос.
+    Опрос последним сообщением: если он выше новой карточки, его не замечают."""
     await offer_favorite(bot, user_id, app)
-    await offer_survey(bot, user_id, app)
     if in_carousel and user_id in app.carousels:
         if not await advance(bot, user_id, app, new_message=True):
             await bot.send_message(user_id, nothing_more(app.carousels[user_id]))
@@ -353,6 +334,7 @@ async def after_review(bot: Bot, user_id: int, app: App, in_carousel: bool) -> N
             reply_markup=nav_kb(("Да, по моим оценкам и любимым фильмам", "menu_recommend"),
                                 ("Да, под настроение (спрошу пару вопросов)", "menu_today")),
         )
+    await offer_survey(bot, user_id, app)
 
 
 @router.message(Review.text, F.text, ~F.text.startswith("/"))
@@ -386,7 +368,7 @@ async def menu(callback: CallbackQuery, callback_data: NavCb, state: FSMContext,
 
 # --- опрос «насколько подходят подборки» (онлайн-тест, этап 6) ---
 
-SURVEY_WAVES = (5, 20)  # спросить после 5 и после 20 оценок фильмов из подборок
+SURVEY_WAVES = (3, 20)  # спросить после 3 и после 20 оценок фильмов из подборок
 SURVEY_LABELS = {1: "1 — совсем мимо", 2: "2 — скорее мимо", 3: "3 — так себе", 4: "4 — хорошо", 5: "5 — в точку"}
 
 
@@ -399,6 +381,7 @@ def survey_due(app: App, user_id: int) -> int | None:
     rated = app.conn.execute("SELECT count(*) FROM ratings WHERE user_id = ? AND source = 'recommendation'",
                              (user_id,)).fetchone()[0]
     done = {r[0] for r in app.conn.execute("SELECT wave FROM survey WHERE user_id = ?", (user_id,))}
+    done |= {w for u, w in app.survey_offered if u == user_id}  # уже спросили — не повторяем после каждой оценки
     due = [w for w in SURVEY_WAVES if rated >= w and w not in done]
     return due[-1] if due else None
 
@@ -407,6 +390,7 @@ async def offer_survey(bot: Bot, user_id: int, app: App) -> None:
     wave = survey_due(app, user_id)
     if wave is None:
         return
+    app.survey_offered.add((user_id, wave))
     kb = InlineKeyboardBuilder()
     for score, label in SURVEY_LABELS.items():
         kb.button(text=label, callback_data=SurveyCb(w=wave, s=score))

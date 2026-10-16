@@ -8,7 +8,7 @@
 | Офлайн-сравнение, малый набор | `python -m recsys.evaluate ml-latest-small` | лучший — гибрид ALS + контентная, NDCG@10 0,116 | [metrics_ml-latest-small.md](metrics_ml-latest-small.md) |
 | Офлайн-сравнение, MovieLens 32M, выборка 20 тыс. | `python -m recsys.evaluate ml-32m --sample-users 20000 --eval-users 3000` | тот же порядок моделей: гибрид 0,129, ALS 0,117, популярность 0,076, SVD 0,032 | [metrics_ml-32m_sample20k.md](metrics_ml-32m_sample20k.md) |
 | Офлайн-сравнение, MovieLens 32M, полный набор | `python -m recsys.evaluate ml-32m --eval-users 5000` | 200 947 пользователей, метрики по 5 000: гибрид 0,131, ALS 0,119, популярность 0,073, SVD 0,043 | [metrics_ml-32m.md](metrics_ml-32m.md) |
-| Онлайн-тест на 10–20 людях | бот + `python -m recsys.online_stats --exclude <свои ID>` | идёт: бот спрашивает «насколько подборки подходят» после 5 и 20 оценок; режим показа (по вкусу / под настроение / поиск) записывается | `online_test.md` (появится после теста) |
+| Онлайн-тест на 10–20 людях | бот + `python -m recsys.online_stats --exclude <свои ID>` | идёт: бот спрашивает «насколько подборки подходят» после 3 и 20 оценок; режим показа (по вкусу / под настроение / поиск) записывается | `online_test.md` (появится после теста) |
 
 ## Выводы
 
