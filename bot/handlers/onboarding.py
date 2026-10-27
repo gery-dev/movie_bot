@@ -16,7 +16,7 @@ from bot.services import App
 from bot.states import Calibration, Onboarding
 from recsys import calibration
 from recsys.favorites import add_favorite
-from recsys.profile import ensure_user, excluded_films
+from recsys.profile import ensure_user, excluded_films, save_genres
 
 router = Router()
 NOT_COMMAND = ~F.text.startswith("/")
@@ -75,8 +75,10 @@ async def toggle_genre(callback: CallbackQuery, callback_data: GenreCb, state: F
 
 
 @router.callback_query(Onboarding.genres, NavCb.filter(F.a == "genres_done"))
-async def genres_done(callback: CallbackQuery, state: FSMContext) -> None:
+async def genres_done(callback: CallbackQuery, state: FSMContext, app: App) -> None:
     genres = (await state.get_data()).get("genres", [])
+    with app.conn:
+        save_genres(app.conn, callback.from_user.id, genres)
     chosen = ", ".join(texts.GENRES_RU[g] for g in genres) or "без предпочтений"
     await callback.message.edit_reply_markup(reply_markup=status_kb(f"Жанры: {chosen}"))
     await state.set_state(Onboarding.films)

@@ -93,6 +93,17 @@ def ensure_user(conn, user_id: int) -> None:
     conn.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
 
 
+def save_genres(conn, user_id: int, genres: list[str]) -> None:
+    """Любимые жанры из знакомства (/start, /calibrate): новый выбор заменяет прежний."""
+    ensure_user(conn, user_id)
+    conn.execute("UPDATE users SET genres = ? WHERE user_id = ?", (",".join(sorted(genres)) or None, user_id))
+
+
+def load_genres(conn, user_id: int) -> set[str]:
+    row = conn.execute("SELECT genres FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    return set(row[0].split(",")) if row and row[0] else set()
+
+
 def record_rating(conn, user_id: int, tconst: str, rating: int, source: str = "recommendation") -> None:
     ensure_user(conn, user_id)
     conn.execute(

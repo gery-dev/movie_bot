@@ -23,7 +23,7 @@ from recsys.explain import CF_STRONG, explain, feature_label, top_features
 from recsys.favorites import favorite_people
 from recsys.features import EMB_MODEL, load_embeddings
 from recsys.models import Catalog, _unit
-from recsys.profile import Profiler, excluded_films, user_events
+from recsys.profile import Profiler, excluded_films, load_genres, user_events
 from recsys.query import Parsed, describe, parse, query_scores, understood
 from recsys.today import today_filter, today_scores
 
@@ -65,6 +65,21 @@ GROUP_MIN_WEIGHT = 0.5  # /together: доля «минимума по участ
 #   0,5 — 16 разных фильмов на всех (одни хиты), 0,3 — 29, 0,2 — 46; медиана голосов IMDb везде ~575 тыс.
 W_NEW = 0.25
 UNKNOWN_POP = 0.2
+# Любимые жанры из знакомства: прибавка W_GENRE · (доля жанров фильма из любимых) на шаге 2, среди кандидатов.
+# MIN_VOTES — в подборки по вкусу, под настроение и новинки попадают фильмы не меньше чем с MIN_VOTES голосов IMDb.
+# История: сначала жанры шли в профиль (вес 2) и уменьшали долю популярности как 8 оценок. На модели MovieLens
+# это выглядело хорошо, но у живых пользователей наверх полезли малоизвестные фильмы, прежде всего новые и
+# документальные: медиана голосов показанных фильмов упала с 1,76 млн до 31 тыс., 60% показов — меньше 50 тыс.,
+# оценки почти прекратились. Профиль из одних жанров сильнее всего поднимает фильмы с малым числом признаков.
+# Проверка на копии базы сервера (5 человек с жанрами) и 60 пользователях MovieLens (4 оценки, 2 жанра):
+#                                   живые: жанры / медиана голосов / < 50 тыс.   MovieLens: жанры / NDCG@10
+#   до правки жанров                       52% / 130 тыс. / 34%                         39% / 0,153
+#   жанры в профиле (было)                 92% /  73 тыс. / 46%                         76% / 0,196
+#   порог 50 тыс. + шаг 2, вес 0,3         80% / 272 тыс. /  0%                         91% / 0,184
+#   то же + UNKNOWN_POP 0,5                86% / 478 тыс. /  0%                         84% / 0,149
+# Берём третий вариант: малоизвестного нет, жанры соблюдаются, точность на MovieLens лучшая.
+W_GENRE = 0.3
+MIN_VOTES = 50_000
 RECENT_SPAN = 30
 NEW_YEARS = 5           # /new — фильмы за столько последних календарных лет, включая текущий
 
@@ -76,7 +91,8 @@ def recency(years: np.ndarray, now_year: int | None = None) -> np.ndarray:
 
 
 def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: float,
-           n: int = CANDIDATES, new: np.ndarray | None = None, w_new: float = 0.0) -> np.ndarray:
+           n: int = CANDIDATES, new: np.ndarray | None = None, w_new: float = 0.0,
+           genre: np.ndarray | None = None, w_genre: float = 0.0) -> np.ndarray:
     """Шаг 2: взять n лучших по base (-inf — исключённые) и переставить их с учётом пожеланий на сегодня
     и любимых людей. Остальные фильмы получают -inf."""
     finite = np.flatnonzero(np.isfinite(base))
@@ -91,6 +107,8 @@ def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: fl
         s += b * _unit(today[cand])
     if w_new and new is not None and np.ptp(new[cand]) > 0:
         s += w_new * _unit(new[cand])
+    if w_genre and genre is not None and np.ptp(genre[cand]) > 0:
+        s += w_genre * _unit(genre[cand])
     score[cand] = s
     return score
 
@@ -113,6 +131,7 @@ class Recommender:
         genres = self.movies.genres.fillna("").str.split(",").map(lambda g: [x for x in g if x])
         self.genre_matrix = normalize(MultiLabelBinarizer(sparse_output=True).fit_transform(genres).astype(float)).tocsr()
         self.recency = recency(self.movies.year.to_numpy(float))
+        self.genre_sets = [set(g) for g in genres]
         self._embeddings = self._text_model = None
         self.cf_known = np.ones(len(self.catalog), bool)
         if als is not None and ml_ratings is not None:
@@ -149,6 +168,12 @@ class Recommender:
             share = POPULARITY_PRIOR / (len(ratings) + POPULARITY_PRIOR)
             parts["total"] = (1 - share) * parts["total"] + share * _unit(self.popularity)
         return parts
+
+    def genre_match(self, genres: set[str]) -> np.ndarray:
+        """Доля жанров фильма из любимых (0 — ни одного)."""
+        if not genres:
+            return np.zeros(len(self.catalog))
+        return np.array([len(g & genres) / len(g) if g else 0.0 for g in self.genre_sets])
 
     def long_term(self, conn, user_id: int, events=None) -> np.ndarray:
         return self.long_term_parts(conn, user_id, events)["total"]
@@ -193,6 +218,7 @@ class Recommender:
         подборка по вкусу (/recommend). min_year — только фильмы не старше этого года (/new).
         diverse=False — без MMR (для сравнения)."""
         answers = answers or {}
+        genres = load_genres(conn, user_id)
         parts = self.long_term_parts(conn, user_id)
         long_term = parts["total"]
         today = today_scores(self.movies, answers) if answers else np.zeros(len(self.catalog))
@@ -204,6 +230,8 @@ class Recommender:
             ok &= today_filter(self.movies, answers)
         if min_year:
             ok &= self.movies.year.to_numpy(float) >= min_year
+        if MIN_VOTES:
+            ok &= self.movies.votes.fillna(0).to_numpy(float) >= MIN_VOTES
         skip = excluded_films(conn, user_id)
         if skip:
             ok[self.catalog.positions([t for t in skip if t in self.catalog.index])] = False
@@ -211,7 +239,8 @@ class Recommender:
         # если в /today выбрана эпоха, свежесть ей не мешает
         # в /new и так одни новые фильмы — там свежесть только тянула бы к самому последнему году
         w_new = 0.0 if answers.get("era") not in (None, "any") or min_year else W_NEW
-        score = rerank(base, today, B, fav, C, new=self.recency, w_new=w_new)
+        score = rerank(base, today, B, fav, C, new=self.recency, w_new=w_new,
+                       genre=self.genre_match(genres), w_genre=W_GENRE)
 
         if diverse:
             top = self.diversify(score, k)

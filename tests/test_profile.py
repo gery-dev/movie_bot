@@ -303,3 +303,18 @@ def test_recency_and_new_only(conn):
     assert list(recency(np.array([1990, 2026, np.nan]), now_year=2026)) == [0.0, 1.0, 0.0]
     rec = Recommender(conn)
     assert set(rec.recommend(conn, USER, k=5, min_year=2020).tconst) == {"tt03", "tt09"}
+
+
+def test_chosen_genres_saved_and_raise_their_films(conn):
+    from recsys.profile import load_genres, save_genres
+    save_genres(conn, USER, ["Comedy", "Romance"])
+    save_genres(conn, USER, ["Comedy"])                     # новый выбор заменяет прежний
+    assert load_genres(conn, USER) == {"Comedy"}
+    record_rating(conn, USER, "tt08", 3)
+    rec = Recommender(conn)
+    with_genre = rec.recommend(conn, USER, k=9, diverse=False).tconst.tolist()
+    save_genres(conn, USER, [])
+    assert load_genres(conn, USER) == set()
+    without = rec.recommend(conn, USER, k=9, diverse=False).tconst.tolist()
+    assert with_genre.index("tt06") < without.index("tt06")  # комедия поднялась
+    assert "tt07" not in with_genre                          # 30 тыс. голосов — ниже порога известности

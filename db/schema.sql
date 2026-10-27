@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS users (
     user_id         INTEGER PRIMARY KEY,   -- Telegram ID
     created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     onboarding_done INTEGER NOT NULL DEFAULT 0,
-    calibration_done INTEGER NOT NULL DEFAULT 0
+    calibration_done INTEGER NOT NULL DEFAULT 0,
+    genres          TEXT                   -- любимые жанры из знакомства, через запятую (жанры IMDb)
 );
 
 CREATE TABLE IF NOT EXISTS ratings (
