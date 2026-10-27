@@ -318,3 +318,14 @@ def test_chosen_genres_saved_and_raise_their_films(conn):
     without = rec.recommend(conn, USER, k=9, diverse=False).tconst.tolist()
     assert with_genre.index("tt06") < without.index("tt06")  # комедия поднялась
     assert "tt07" not in with_genre                          # 30 тыс. голосов — ниже порога известности
+
+
+def test_taste_fit_follows_liked_years_and_language(conn):
+    rec = Recommender(conn)
+    assert rec.taste_fit(conn, USER) is None  # понравившихся пока мало
+    for t in ["tt03", "tt09", "tt01"]:  # 2020, 2023, 2014, все на английском
+        record_rating(conn, USER, t, 5, "onboarding")
+    era, lang = rec.taste_fit(conn, USER)
+    pos = rec.catalog.index
+    assert era[pos["tt03"]] > era[pos["tt07"]]   # 2020 ближе к понравившемуся, чем 1975
+    assert lang[pos["tt01"]] == 1.0 and lang[pos["tt07"]] == 0.0  # русского среди понравившегося нет

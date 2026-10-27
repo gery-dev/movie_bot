@@ -22,7 +22,7 @@ MIN_RATINGS_FOR_MEAN = 5  # дальше нейтральной считаетс
 SIGNALS = {
     "not_seen": -0.1,
     "ignored": -0.1,
-    "not_interested": -0.5,
+    "not_interested": -1.0,  # как оценка 1: при −0,5 те же жанры («мультфильмы») возвращались снова
     "later": 0.1,
     "seen": 0.0,
     "skip": 0.0,

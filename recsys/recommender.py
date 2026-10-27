@@ -80,6 +80,20 @@ UNKNOWN_POP = 0.2
 # Берём третий вариант: малоизвестного нет, жанры соблюдаются, точность на MovieLens лучшая.
 W_GENRE = 0.3
 MIN_VOTES = 50_000
+# Эпоха и язык, которые нравятся человеку, — по фильмам с его оценкой 4–5 (знакомство, калибровка, подборки).
+# era — насколько год фильма близок к годам понравившихся (ядро шириной ERA_BANDWIDTH лет), lang — доля
+# понравившихся фильмов на языке фильма. Нужно, когда понравилось в основном новое, а бот тянул классику
+# 80–90-х, и когда по высокому рейтингу IMDb наверх выходили фильмы на языках, которых человек не смотрит.
+# 150 пользователей MovieLens, NDCG@10 (знакомство + калибровка / импорт всех оценок):
+#   без них — 0,027 / 0,032;  язык 0,15 — 0,029 / 0,034;  эпоха 0,3 — 0,035 / 0,096;  эпоха 0,5 — 0,042 / 0,097;
+#   эпоха 0,5 + язык 0,15 — 0,041 / 0,094;  + язык 0,3 — 0,041 / 0,092;  эпоха 0,75 — 0,042 / 0,094;  1,0 — меньше.
+# Берём эпоху 0,5: главный прирост (свежесть W_NEW без неё тянула к годам, которые человеку не нравятся).
+# Язык на MovieLens почти нейтрален; на копии данных сервера при 0,15 у тестировщика, смотрящего только
+# англоязычное, в десятке оставался индийский фильм с накрученным рейтингом IMDb, при 0,3 — уже нет.
+W_ERA = 0.5
+W_LANG = 0.3
+ERA_BANDWIDTH = 8
+MIN_LIKED_FOR_FIT = 3
 RECENT_SPAN = 30
 NEW_YEARS = 5           # /new — фильмы за столько последних календарных лет, включая текущий
 
@@ -92,7 +106,8 @@ def recency(years: np.ndarray, now_year: int | None = None) -> np.ndarray:
 
 def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: float,
            n: int = CANDIDATES, new: np.ndarray | None = None, w_new: float = 0.0,
-           genre: np.ndarray | None = None, w_genre: float = 0.0) -> np.ndarray:
+           genre: np.ndarray | None = None, w_genre: float = 0.0,
+           extra: list[tuple[np.ndarray, float]] | None = None) -> np.ndarray:
     """Шаг 2: взять n лучших по base (-inf — исключённые) и переставить их с учётом пожеланий на сегодня
     и любимых людей. Остальные фильмы получают -inf."""
     finite = np.flatnonzero(np.isfinite(base))
@@ -109,6 +124,9 @@ def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: fl
         s += w_new * _unit(new[cand])
     if w_genre and genre is not None and np.ptp(genre[cand]) > 0:
         s += w_genre * _unit(genre[cand])
+    for vec, w in extra or []:  # эпоха и язык понравившихся фильмов
+        if w and np.ptp(vec[cand]) > 0:
+            s += w * _unit(vec[cand])
     score[cand] = s
     return score
 
@@ -175,6 +193,24 @@ class Recommender:
             return np.zeros(len(self.catalog))
         return np.array([len(g & genres) / len(g) if g else 0.0 for g in self.genre_sets])
 
+    def taste_fit(self, conn, user_id: int) -> tuple[np.ndarray, np.ndarray] | None:
+        """(эпоха, язык) по фильмам с оценкой 4–5; None — понравившихся пока меньше MIN_LIKED_FOR_FIT."""
+        liked = [t for (t,) in conn.execute("SELECT tconst FROM ratings WHERE user_id = ? AND rating >= 4", (user_id,))
+                 if t in self.catalog.index]
+        if len(liked) < MIN_LIKED_FOR_FIT:
+            return None
+        pos = self.catalog.positions(liked)
+        years = self.movies.year.to_numpy(float)
+        # по уникальным годам с их числом, а не по каждому фильму: у импортировавших тысячу оценок
+        # матрица «каталог × понравившиеся» заняла бы сотни мегабайт
+        uniq, counts = np.unique(years[pos][np.isfinite(years[pos])], return_counts=True)
+        kernel = np.exp(-0.5 * ((years[:, None] - uniq[None, :]) / ERA_BANDWIDTH) ** 2)
+        era = kernel @ counts / max(counts.sum(), 1)
+        langs = self.movies.language.fillna("")
+        share = langs.iloc[pos].value_counts(normalize=True)
+        lang = langs.map(share).fillna(0).to_numpy(float)
+        return np.nan_to_num(era), lang
+
     def long_term(self, conn, user_id: int, events=None) -> np.ndarray:
         return self.long_term_parts(conn, user_id, events)["total"]
 
@@ -239,8 +275,15 @@ class Recommender:
         # если в /today выбрана эпоха, свежесть ей не мешает
         # в /new и так одни новые фильмы — там свежесть только тянула бы к самому последнему году
         w_new = 0.0 if answers.get("era") not in (None, "any") or min_year else W_NEW
+        fit = self.taste_fit(conn, user_id)
+        extra = None
+        if fit is not None:
+            era, lang = fit
+            # выбранная в /today эпоха и /new сами задают годы — там подстройка под годы не нужна
+            w_era = 0.0 if answers.get("era") not in (None, "any") or min_year else W_ERA
+            extra = [(era, w_era), (lang, W_LANG)]
         score = rerank(base, today, B, fav, C, new=self.recency, w_new=w_new,
-                       genre=self.genre_match(genres), w_genre=W_GENRE)
+                       genre=self.genre_match(genres), w_genre=W_GENRE, extra=extra)
 
         if diverse:
             top = self.diversify(score, k)
