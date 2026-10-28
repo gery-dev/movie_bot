@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from data_pipeline.movielens import load_ratings
 from data_pipeline.tmdb import TMDB
 from db.database import connect
 from recsys import calibration
@@ -16,11 +15,10 @@ from recsys.profile import ensure_user, rebuild_profile, record_rating, record_r
 from recsys.recommender import Recommender
 from recsys.search import NameIndex
 from recsys.sentiment import load as load_sentiment, sentiment
+from recsys.train_als import ALS_FILE
 
 log = logging.getLogger(__name__)
 CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
-ALS_DATASET = "ml-latest-small"
-ALS_PARAMS = dict(factors=32, regularization=0.1, alpha=1.0)  # лучшие на этапе 2
 REVIEW_WINDOW = 15 * 60  # секунд после оценки, когда обычный текст считается отзывом
 
 
@@ -52,12 +50,11 @@ class Carousel:
 class App:
     def __init__(self, conn: sqlite3.Connection | None = None, with_als: bool = True):
         self.conn = conn or connect()
-        ml = load_ratings(ALS_DATASET) if with_als else None
         als = None
-        if with_als:
+        if with_als:  # векторы фильмов готовит python -m recsys.train_als
             ids = [r[0] for r in self.conn.execute("SELECT tconst FROM movies ORDER BY tconst")]
-            als = ALS(Catalog(ids), **ALS_PARAMS).fit(ml)
-        self.rec = Recommender(self.conn, als=als, ml_ratings=ml)
+            als = ALS.load(ALS_FILE, Catalog(ids))
+        self.rec = Recommender(self.conn, als=als)
         if with_als:  # модели для запросов текстом и тональности грузятся секунды — лучше при запуске
             self.rec.text_model()
             load_sentiment()

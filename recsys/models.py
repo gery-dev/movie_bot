@@ -138,7 +138,31 @@ class ALS:
         )
         self.model = AlternatingLeastSquares(random_state=42, **self.params)
         self.model.fit(items, show_progress=False)
+        self.known = np.zeros(len(self.catalog), bool)  # фильмы без оценок в обучении модель не знает
+        self.known[self.catalog.positions(train.tconst.unique())] = True
         return self
+
+    def save(self, path) -> None:
+        """Для бота нужны только векторы фильмов: вкус нового человека считается по ним (recalculate_user)."""
+        np.savez(path, ids=np.array(self.catalog.ids)[self.known], vectors=self.model.item_factors[self.known],
+                 **{k: np.array(v) for k, v in self.params.items()})
+
+    @classmethod
+    def load(cls, path, catalog: Catalog) -> "ALS":
+        """Векторы из файла раскладываются по нынешнему каталогу; фильмов, которых нет в файле, модель не знает."""
+        from implicit.als import AlternatingLeastSquares
+
+        data = np.load(path)
+        als = cls(catalog, **{k: data[k].item() for k in ("factors", "regularization", "alpha", "iterations")})
+        als.model = AlternatingLeastSquares(**als.params)
+        rows = [(i, catalog.index[t]) for i, t in enumerate(data["ids"]) if t in catalog.index]
+        als.model.item_factors = np.zeros((len(catalog), data["vectors"].shape[1]), np.float32)
+        als.known = np.zeros(len(catalog), bool)
+        if rows:
+            src, dst = map(list, zip(*rows))
+            als.model.item_factors[dst] = data["vectors"][src]
+            als.known[dst] = True
+        return als
 
     def scores(self, user_id) -> np.ndarray:
         u = self.user_index.get(user_id)

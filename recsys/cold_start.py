@@ -24,7 +24,7 @@ from recsys.data import RELEVANT, temporal_split
 from recsys.metrics import ndcg_at_k, precision_at_k, recall_at_k
 from recsys.models import ALS, Catalog
 from recsys.profile import record_rating, record_reaction
-from recsys.recommender import Recommender
+from recsys.recommender import CF_MIN_RATING, Recommender
 
 DATASET = "ml-latest-small"
 N_USERS = 150
@@ -54,8 +54,8 @@ def main() -> None:
     others = train[~train.userId.isin(set(eval_users))]  # ALS не видит оцениваемых пользователей
 
     ids = [r[0] for r in conn.execute("SELECT tconst FROM movies ORDER BY tconst")]
-    als = ALS(Catalog(ids), **ALS_PARAMS).fit(others)
-    rec = Recommender(conn, als=als, ml_ratings=others)
+    als = ALS(Catalog(ids), **ALS_PARAMS).fit(others[others.rating >= CF_MIN_RATING])  # как в боте
+    rec = Recommender(conn, als=als)
     movies = pd.read_sql("SELECT tconst, year, genres, country, rating, votes FROM movies", conn).set_index("tconst")
     pool = calibration.calibration_pool(movies)
 

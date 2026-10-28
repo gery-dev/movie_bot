@@ -45,6 +45,9 @@ CF_WEIGHT = 0.5            # доля ALS в долгосрочной части
 #   было: ALS с 5 оценок, без популярности — знакомство 0,019, + калибровка 0,031, импорт 0,102;
 #   ALS с 1-й оценки и доля популярности N0 / (n + N0), N0 = 5 — 0,058, 0,062, 0,107.
 MIN_RATINGS_FOR_CF = 1
+# В ALS идут только оценки от CF_MIN_RATING: для неё оценка — сила интереса, и «1★» тянула бы к похожим.
+# Нелюбимое учитывает профиль. Проверка и выбор 32M — в recsys/train_als.py.
+CF_MIN_RATING = 4
 POPULARITY_PRIOR = 5
 POPULARITY_MIN_VOTES = 200_000  # поправка на число голосов во взвешенном рейтинге (этап 2)
 # MMR (разнообразие выдачи). Подбор на 30 пользователях MovieLens, пятёрка фильмов:
@@ -132,8 +135,8 @@ def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: fl
 
 
 class Recommender:
-    def __init__(self, conn, als=None, ml_ratings: pd.DataFrame | None = None):
-        """als — обученная модель recsys.models.ALS на каталоге всех фильмов БД (необязательно)."""
+    def __init__(self, conn, als=None):
+        """als — recsys.models.ALS на каталоге всех фильмов БД, обученная или из файла (необязательно)."""
         self.movies = pd.read_sql(
             "SELECT tconst, title, title_ru, year, runtime, genres, language, rating, votes FROM movies ORDER BY tconst",
             conn,
@@ -151,11 +154,8 @@ class Recommender:
         self.recency = recency(self.movies.year.to_numpy(float))
         self.genre_sets = [set(g) for g in genres]
         self._embeddings = self._text_model = None
-        self.cf_known = np.ones(len(self.catalog), bool)
-        if als is not None and ml_ratings is not None:
-            known = np.zeros(len(self.catalog), bool)
-            known[self.catalog.positions(ml_ratings.tconst.unique())] = True
-            self.cf_known = known  # фильмы без оценок MovieLens ALS не знает
+        # фильмы без оценок MovieLens ALS не знает
+        self.cf_known = als.known if als is not None else np.ones(len(self.catalog), bool)
 
     def long_term_parts(self, conn, user_id: int, events=None) -> dict:
         """Долгосрочная оценка и её части — нужны и для выдачи, и для объяснения."""
@@ -168,14 +168,15 @@ class Recommender:
         ratings = conn.execute("SELECT tconst, rating FROM ratings WHERE user_id = ?", (user_id,)).fetchall()
         # фильмы, добавленные после запуска (например, из проката), модели ещё не известны
         ratings = [(t, r) for t, r in ratings if t in self.catalog.index]
-        if self.als is not None and len(ratings) >= MIN_RATINGS_FOR_CF:
+        liked = [(t, r) for t, r in ratings if r >= CF_MIN_RATING]
+        if self.als is not None and len(liked) >= MIN_RATINGS_FOR_CF:
             row = sparse.csr_matrix(
-                ([float(r) for _, r in ratings], ([0] * len(ratings), self.catalog.positions([t for t, _ in ratings]))),
+                ([float(r) for _, r in liked], ([0] * len(liked), self.catalog.positions([t for t, _ in liked]))),
                 shape=(1, len(self.catalog)),
             )
             factors = self.als.model.recalculate_user(0, row)
             cf = _unit(np.where(self.cf_known, self.als.model.item_factors @ np.asarray(factors).ravel(), -np.inf))
-            # фильмы, которых нет в MovieLens (всё новее 2018 года), ALS не знает. Раньше они получали минимум
+            # фильмы, которых нет в MovieLens (в 32M — почти всё новее 2023 года), ALS не знает. Раньше они получали минимум
             # ALS и почти не попадали в выдачу; теперь вместо ALS у них взвешенный рейтинг IMDb — ALS тоже
             # тянет вверх известные фильмы, а с одним профилем наверх лезли малоизвестные новинки
             mix = CF_WEIGHT * cf + (1 - CF_WEIGHT) * profile_score

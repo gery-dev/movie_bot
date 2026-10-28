@@ -329,3 +329,21 @@ def test_taste_fit_follows_liked_years_and_language(conn):
     pos = rec.catalog.index
     assert era[pos["tt03"]] > era[pos["tt07"]]   # 2020 ближе к понравившемуся, чем 1975
     assert lang[pos["tt01"]] == 1.0 and lang[pos["tt07"]] == 0.0  # русского среди понравившегося нет
+
+
+def test_als_file_and_only_liked_ratings(conn, tmp_path):
+    from recsys.models import ALS, Catalog
+    ids = [m[0] for m in MOVIES]
+    train = pd.DataFrame({"userId": [1, 1, 2, 2, 3, 3], "tconst": ["tt01", "tt02", "tt01", "tt02", "tt05", "tt06"],
+                          "rating": [5.0, 5.0, 4.0, 5.0, 5.0, 4.0]})
+    als = ALS(Catalog(ids), factors=2, iterations=3).fit(train)
+    als.save(tmp_path / "als.npz")
+    other = ALS.load(tmp_path / "als.npz", Catalog(ids[::-1] + ["tt99"]))  # другой порядок каталога и новый фильм
+    assert other.known[other.catalog.index["tt01"]] and not other.known[other.catalog.index["tt03"]]
+    assert not other.known[other.catalog.index["tt99"]]
+    assert np.allclose(other.model.item_factors[other.catalog.index["tt05"]], als.model.item_factors[als.catalog.index["tt05"]])
+    rec = Recommender(conn, als=ALS.load(tmp_path / "als.npz", Catalog(ids)))
+    record_rating(conn, USER, "tt05", 1)
+    assert rec.long_term_parts(conn, USER)["cf"] is None  # «1★» в ALS не идёт — нелюбимое учитывает профиль
+    record_rating(conn, USER, "tt01", 5)
+    assert rec.long_term_parts(conn, USER)["cf"] is not None
