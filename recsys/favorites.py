@@ -28,7 +28,7 @@ def suggest_favorites(conn, user_id: int) -> list[dict]:
     """Люди, чьи фильмы пользователь высоко оценил не меньше SUGGEST_MIN_FILMS раз, ещё не в избранном
     и не отклонённые раньше: «вы высоко оценили 3 фильма Нолана, добавить в любимые?»"""
     rows = conn.execute(
-        """SELECT mp.nconst, p.name, mp.role, count(DISTINCT r.tconst) AS liked
+        """SELECT mp.nconst, coalesce(p.name_ru, p.name), mp.role, count(DISTINCT r.tconst) AS liked
            FROM ratings r JOIN movie_people mp USING (tconst) JOIN people p USING (nconst)
            WHERE r.user_id = ? AND r.rating >= ?
              AND mp.nconst NOT IN (SELECT nconst FROM favorites WHERE user_id = ?)

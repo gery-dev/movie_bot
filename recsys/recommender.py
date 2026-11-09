@@ -153,7 +153,7 @@ class Recommender:
         self.popularity = (v * r + POPULARITY_MIN_VOTES * r.mean()) / (v + POPULARITY_MIN_VOTES)
         people = pd.read_sql("SELECT tconst, nconst FROM movie_people", conn)
         self.people = people.assign(pos=self.catalog.positions(people.tconst))
-        self.names = dict(conn.execute("SELECT nconst, name FROM people").fetchall())
+        self.names = dict(conn.execute("SELECT nconst, coalesce(name_ru, name) FROM people").fetchall())
         genres = self.movies.genres.fillna("").str.split(",").map(lambda g: [x for x in g if x])
         self.genre_matrix = normalize(MultiLabelBinarizer(sparse_output=True).fit_transform(genres).astype(float)).tocsr()
         self.recency = recency(self.movies.year.to_numpy(float))

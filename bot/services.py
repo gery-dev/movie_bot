@@ -64,7 +64,7 @@ class App:
         )
         self.tmdb = TMDB(self.conn)
         people = pd.read_sql(
-            """SELECT mp.tconst, mp.role, mp.ord, p.name FROM movie_people mp JOIN people p USING (nconst)
+            """SELECT mp.tconst, mp.role, mp.ord, coalesce(p.name_ru, p.name) AS name FROM movie_people mp JOIN people p USING (nconst)
                ORDER BY mp.tconst, mp.role, mp.ord""", self.conn)
         self.credits = {t: g for t, g in people.groupby("tconst")}
         self.last_rated: dict[int, tuple[str, float]] = {}  # пользователь → (фильм, время) для отзыва текстом
@@ -86,7 +86,8 @@ class App:
         variants = [[name, ru] + (aka.split("|") if isinstance(aka, str) else [])
                     for name, ru, aka in zip(p.name, p.name_ru, p.aka_ru)]
         self.people_index = NameIndex(p.nconst, variants, p.fame)
-        self.people_info = p.set_index("nconst")[["name", "films"]]
+        p["shown"] = p.name_ru.fillna(p.name)  # в боте — русское имя из Wikidata, если оно есть
+        self.people_info = p.set_index("nconst")[["shown", "films"]]
 
     def search_movies(self, query: str, limit: int = 5) -> list[tuple[str, str]]:
         """[(tconst, «Название (год)»)] — с опечатками, по-русски и латиницей; при равном сходстве известнее выше."""
@@ -100,7 +101,11 @@ class App:
             found = [n for n, _ in await self.tmdb.search_person(query, limit) if n in self.people_info.index]
             self.conn.commit()  # кэш TMDB
         info = self.people_info
-        return [{"nconst": n, "name": info.at[n, "name"], "films": int(info.at[n, "films"])} for n in found]
+        return [{"nconst": n, "name": info.at[n, "shown"], "films": int(info.at[n, "films"])} for n in found]
+
+    def person_name(self, nconst: str) -> str:
+        """Имя для показа: русское, если есть, иначе как в IMDb."""
+        return self.conn.execute("SELECT coalesce(name_ru, name) FROM people WHERE nconst = ?", (nconst,)).fetchone()[0]
 
     # --- описание фильма ---
 
@@ -147,17 +152,18 @@ class App:
             rebuild_profile(self.conn, self.rec.profiler, user_id)
         log.info("user %s reacted to %s: %s", user_id, tconst, reaction)
 
-    def undo_calibration(self, user_id: int, tconst: str) -> None:
-        """Кнопка «Назад» в калибровке: убрать ответ на фильм, чтобы ответить заново."""
+    def undo_answer(self, user_id: int, tconst: str, source: str) -> None:
+        """Убрать ответ на фильм: «Назад» в калибровке (source = calibration) или «Отменить» у любимого
+        фильма в знакомстве (source = onboarding)."""
         with self.conn:
-            self.conn.execute("DELETE FROM ratings WHERE user_id = ? AND tconst = ? AND source = 'calibration'",
-                              (user_id, tconst))
+            self.conn.execute("DELETE FROM ratings WHERE user_id = ? AND tconst = ? AND source = ?",
+                              (user_id, tconst, source))
             self.conn.execute("""DELETE FROM reactions WHERE user_id = ? AND tconst = ?
                                  AND reaction IN ('not_seen', 'skip')""", (user_id, tconst))
             self.conn.execute("DELETE FROM user_lists WHERE user_id = ? AND tconst = ? AND list = 'seen'",
                               (user_id, tconst))
             rebuild_profile(self.conn, self.rec.profiler, user_id)
-        log.info("user %s undid calibration answer for %s", user_id, tconst)
+        log.info("user %s undid %s answer for %s", user_id, source, tconst)
 
     def hide(self, user_id: int, tconst: str, hidden: bool = True) -> None:
         with self.conn:

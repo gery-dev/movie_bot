@@ -133,8 +133,11 @@ def set_list(conn, user_id: int, tconst: str, list_name: str) -> None:
     ensure_user(conn, user_id)
     conn.execute("INSERT OR IGNORE INTO user_lists (user_id, tconst, list) VALUES (?, ?, ?)",
                  (user_id, tconst, list_name))
-    if list_name == "seen":  # посмотренный фильм больше не «в планах»
-        conn.execute("DELETE FROM user_lists WHERE user_id = ? AND tconst = ? AND list = 'planned'", (user_id, tconst))
+    # «видел» и «в планах» не пересекаются, побеждает последнее действие: посмотренный фильм больше не
+    # «в планах», а «посмотрю позже» на уже виденном (пересмотреть) убирает его из «видел»; оценка остаётся
+    other = {"seen": "planned", "planned": "seen"}.get(list_name)
+    if other:
+        conn.execute("DELETE FROM user_lists WHERE user_id = ? AND tconst = ? AND list = ?", (user_id, tconst, other))
 
 
 def excluded_films(conn, user_id: int) -> set[str]:

@@ -347,3 +347,25 @@ def test_als_file_and_only_liked_ratings(conn, tmp_path):
     assert rec.long_term_parts(conn, USER)["cf"] is None  # «1★» в ALS не идёт — нелюбимое учитывает профиль
     record_rating(conn, USER, "tt01", 5)
     assert rec.long_term_parts(conn, USER)["cf"] is not None
+
+
+def test_undo_onboarding_film_keeps_other_ratings(conn, profiler):
+    from types import SimpleNamespace
+
+    from bot.services import App
+    a, b = MOVIES[0][0], MOVIES[1][0]
+    record_rating(conn, USER, a, 5, "onboarding")
+    record_rating(conn, USER, b, 4, "calibration")
+    App.undo_answer(SimpleNamespace(conn=conn, rec=SimpleNamespace(profiler=profiler)), USER, a, "onboarding")
+    assert [r[0] for r in conn.execute("SELECT tconst FROM ratings WHERE user_id = ?", (USER,))] == [b]
+    assert a not in excluded_films(conn, USER)  # фильм снова может попасть в подборки
+
+
+def test_seen_and_planned_do_not_overlap(conn):
+    record_rating(conn, USER, "tt01", 5)  # оценил — в «видел»
+    record_reaction(conn, USER, "tt01", "later")  # потом «посмотрю позже» из карточки списка «видел»
+    lists = conn.execute("SELECT list FROM user_lists WHERE user_id = ? AND tconst = 'tt01'", (USER,)).fetchall()
+    assert [r[0] for r in lists] == ["planned"]
+    record_rating(conn, USER, "tt01", 4)
+    lists = conn.execute("SELECT list FROM user_lists WHERE user_id = ? AND tconst = 'tt01'", (USER,)).fetchall()
+    assert [r[0] for r in lists] == ["seen"]

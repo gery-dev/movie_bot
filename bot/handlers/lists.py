@@ -7,10 +7,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot import texts
 from bot.handlers.recommend import start_person_films
-from bot.keyboards import ListCb, MovieCb, NavCb, PersonCb, status_kb
+from bot.keyboards import ListCb, MovieCb, NavCb, PersonCb, UndoCb, person_button, status_kb, undo_kb
 from bot.services import App
 from bot.states import FavoriteSearch
-from recsys.favorites import add_favorite, person_unseen, remove_favorite
+from recsys.favorites import add_favorite, favorite_people, person_unseen, remove_favorite
 
 router = Router()
 LISTS = {"seen": "Видел", "planned": "В планах", "hidden": "Скрыто"}
@@ -63,8 +63,8 @@ NO_FAVORITES_TEXT = ("Любимых актёров и режиссёров по
 
 def favorites_kb(app: App, user_id: int):
     rows = app.conn.execute(
-        """SELECT f.nconst, p.name FROM favorites f JOIN people p USING (nconst)
-           WHERE f.user_id = ? AND f.added_by != 'declined' ORDER BY p.name""", (user_id,)).fetchall()
+        """SELECT f.nconst, coalesce(p.name_ru, p.name) AS shown FROM favorites f JOIN people p USING (nconst)
+           WHERE f.user_id = ? AND f.added_by != 'declined' ORDER BY shown""", (user_id,)).fetchall()
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить актёра или режиссёра", callback_data=NavCb(a="fav_add"))
     for nconst, name in rows:
@@ -107,9 +107,10 @@ async def favorite_search(message: Message, app: App) -> None:
     if not found:
         await message.answer("Никого не нашёл. Попробуй иначе — например, фамилию латиницей.")
         return
+    favorites = favorite_people(app.conn, message.from_user.id)
     kb = InlineKeyboardBuilder()
     for p in found:
-        kb.button(text=f"{p['name']} ({p['films']} фильм.)", callback_data=PersonCb(a="add", n=p["nconst"]))
+        kb.button(text=person_button(p, favorites), callback_data=PersonCb(a="add", n=p["nconst"]))
     kb.adjust(1)
     await message.answer("Кого добавить? Если нужного нет — напиши имя иначе.", reply_markup=kb.as_markup())
 
@@ -117,11 +118,26 @@ async def favorite_search(message: Message, app: App) -> None:
 @router.callback_query(PersonCb.filter(F.a == "add"))
 async def favorite_pick(callback: CallbackQuery, callback_data: PersonCb, state: FSMContext, bot: Bot,
                         app: App) -> None:
+    name = app.person_name(callback_data.n)
+    if callback_data.n in favorite_people(app.conn, callback.from_user.id):
+        await callback.message.edit_reply_markup(reply_markup=status_kb(f"Уже в любимых: {name}"))
+        await callback.answer("Уже в любимых")
+        return
     with app.conn:
         add_favorite(app.conn, callback.from_user.id, callback_data.n, "manual")
-    name = app.conn.execute("SELECT name FROM people WHERE nconst = ?", (callback_data.n,)).fetchone()[0]
-    await callback.message.edit_reply_markup(reply_markup=status_kb(f"В любимых: {name}"))
+    await callback.message.edit_reply_markup(reply_markup=undo_kb(f"В любимых: {name}", "fav", callback_data.n))
     await callback.answer()
+    await show_favorites(bot, callback.from_user.id, state, app)
+
+
+@router.callback_query(UndoCb.filter(F.k == "fav"))
+async def favorite_undo(callback: CallbackQuery, callback_data: UndoCb, state: FSMContext, bot: Bot,
+                        app: App) -> None:
+    with app.conn:
+        remove_favorite(app.conn, callback.from_user.id, callback_data.i)
+    name = app.person_name(callback_data.i)
+    await callback.message.edit_reply_markup(reply_markup=status_kb(f"Отменено: {name}"))
+    await callback.answer("Отменил")
     await show_favorites(bot, callback.from_user.id, state, app)
 
 
@@ -138,7 +154,7 @@ async def favorite_remove(callback: CallbackQuery, callback_data: PersonCb, app:
 async def favorite_films(callback: CallbackQuery, callback_data: PersonCb, state: FSMContext, bot: Bot,
                          app: App) -> None:
     films = person_unseen(app.conn, callback.from_user.id, callback_data.n, limit=PERSON_FILMS)
-    name = app.conn.execute("SELECT name FROM people WHERE nconst = ?", (callback_data.n,)).fetchone()[0]
+    name = app.person_name(callback_data.n)
     await callback.answer()
     if not films:
         await callback.message.answer(f"Все фильмы {name} из базы ты уже видел.")

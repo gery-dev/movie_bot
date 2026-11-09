@@ -2,7 +2,7 @@
 import pytest
 
 from bot.cards import CAPTION_LIMIT, card_text, kinopoisk_url, youtube_search_url
-from bot.keyboards import MovieCb, PersonCb, movie_kb, status_kb, today_kb
+from bot.keyboards import MovieCb, PersonCb, UndoCb, movie_kb, person_button, status_kb, today_kb, undo_kb
 from bot.texts import films_word
 from data_pipeline.tmdb import trailer_keys
 
@@ -34,7 +34,8 @@ def test_card_without_optional_fields():
 
 def test_callback_data_fits_telegram_limit():
     # Telegram ограничивает данные кнопки 64 байтами
-    for cb in [MovieCb(a="r", t="tt12345678", v=5, c="rec"), PersonCb(a="films", n="nm12345678")]:
+    for cb in [MovieCb(a="r", t="tt12345678", v=5, c="rec"), PersonCb(a="films", n="nm12345678"),
+               UndoCb(k="person", i="nm12345678")]:
         assert len(cb.pack().encode()) <= 64
 
 
@@ -188,3 +189,46 @@ def test_description_fits_telegram_limits():
     from bot import texts
     assert len(texts.DESCRIPTION) <= 512 and len(texts.SHORT_DESCRIPTION) <= 120
     assert texts.WELCOME.startswith(texts.DESCRIPTION)
+
+
+def test_user_updates_handled_one_by_one():
+    """Быстрые нажатия одного пользователя не затирают состояние друг друга (как было с выбором жанров)."""
+    import asyncio
+    from datetime import datetime
+
+    from aiogram import Bot, Dispatcher
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.memory import SimpleEventIsolation
+    from aiogram.types import Chat, Message, Update, User
+
+    dp = Dispatcher(events_isolation=SimpleEventIsolation())
+
+    @dp.message()
+    async def tap(message: Message, state: FSMContext) -> None:
+        n = (await state.get_data()).get("n", 0)
+        await asyncio.sleep(0.01)  # как ожидание ответа Telegram
+        await state.update_data(n=n + 1)
+
+    async def run() -> int:
+        bot = Bot("123:TEST")
+        user, chat = User(id=1, is_bot=False, first_name="u"), Chat(id=1, type="private")
+        updates = [Update(update_id=i, message=Message(message_id=i, date=datetime.now(), chat=chat, from_user=user,
+                                                       text="x")) for i in range(5)]
+        await asyncio.gather(*(dp.feed_update(bot, u) for u in updates))
+        state = dp.fsm.get_context(bot, chat_id=1, user_id=1)
+        return (await state.get_data())["n"]
+
+    assert asyncio.run(run()) == 5
+
+
+def test_undo_button_after_favorite_pick():
+    rows = undo_kb("В любимых: Кристофер Нолан", "person", "nm0634240").inline_keyboard
+    assert [b.text for row in rows for b in row] == ["✓ В любимых: Кристофер Нолан", "↩ Отменить"]
+    assert UndoCb.unpack(rows[1][0].callback_data) == UndoCb(k="person", i="nm0634240")
+
+
+def test_person_already_in_favorites_is_marked():
+    p = {"nconst": "nm0853380", "name": "Андрей Тарковский", "films": 7}
+    assert person_button(p, set()) == "Андрей Тарковский (7 фильм.)"
+    assert person_button(p, {"nm0853380"}) == "✓ Андрей Тарковский — уже в любимых"
+

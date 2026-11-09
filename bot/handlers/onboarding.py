@@ -11,11 +11,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot import texts
 from bot.cards import build_card, show
 from bot.handlers.recommend import start_recommendations
-from bot.keyboards import GenreCb, MovieCb, NavCb, PersonCb, PickCb, genres_kb, movie_kb, nav_kb, status_kb
+from bot.keyboards import (GenreCb, MovieCb, NavCb, PersonCb, PickCb, UndoCb, genres_kb, movie_kb, nav_kb, person_button,
+                           status_kb, undo_kb)
 from bot.services import App
 from bot.states import Calibration, Onboarding
 from recsys import calibration
-from recsys.favorites import add_favorite
+from recsys.favorites import add_favorite, favorite_people, remove_favorite
 from recsys.profile import ensure_user, excluded_films, save_genres
 
 router = Router()
@@ -67,11 +68,11 @@ async def begin_onboarding(message: Message, state: FSMContext, text: str = text
 
 @router.callback_query(Onboarding.genres, GenreCb.filter())
 async def toggle_genre(callback: CallbackQuery, callback_data: GenreCb, state: FSMContext) -> None:
+    await callback.answer()  # сразу снимаем «часики» с кнопки, не дожидаясь перерисовки клавиатуры
     selected = set((await state.get_data()).get("genres", []))
     selected ^= {callback_data.g}
     await state.update_data(genres=sorted(selected))
     await callback.message.edit_reply_markup(reply_markup=genres_kb(selected))
-    await callback.answer()
 
 
 @router.callback_query(Onboarding.genres, NavCb.filter(F.a == "genres_done"))
@@ -116,7 +117,8 @@ async def search_film(message: Message, app: App) -> None:
 @router.callback_query(Onboarding.films, PickCb.filter())
 async def pick_film(callback: CallbackQuery, callback_data: PickCb, app: App) -> None:
     app.rate(callback.from_user.id, callback_data.t, 5, "onboarding")
-    await callback.message.edit_reply_markup(reply_markup=status_kb(f"Добавил: {app.label(callback_data.t)}"))
+    await callback.message.edit_reply_markup(reply_markup=undo_kb(f"Добавил: {app.label(callback_data.t)}", "film",
+                                                                  callback_data.t))
     await callback.message.answer("Ещё один фильм? Напиши название или переходи к следующему этапу.",
                                   reply_markup=nav_kb(*FILMS_NAV))
     await callback.answer()
@@ -147,9 +149,10 @@ async def search_person(message: Message, app: App) -> None:
         await message.answer("Никого не нашёл. Попробуй иначе — например, фамилию латиницей.",
                              reply_markup=nav_kb(*PEOPLE_NAV))
         return
+    favorites = favorite_people(app.conn, message.from_user.id)
     kb = InlineKeyboardBuilder()
     for p in found:
-        kb.button(text=f"{p['name']} ({p['films']} фильм.)", callback_data=PersonCb(a="add", n=p["nconst"]))
+        kb.button(text=person_button(p, favorites), callback_data=PersonCb(a="add", n=p["nconst"]))
     for text, action in PEOPLE_NAV:
         kb.button(text=text, callback_data=NavCb(a=action))
     kb.adjust(1)
@@ -158,13 +161,32 @@ async def search_person(message: Message, app: App) -> None:
 
 @router.callback_query(Onboarding.people, PersonCb.filter(F.a == "add"))
 async def pick_person(callback: CallbackQuery, callback_data: PersonCb, app: App) -> None:
-    with app.conn:
-        add_favorite(app.conn, callback.from_user.id, callback_data.n, "manual")
-    name = app.conn.execute("SELECT name FROM people WHERE nconst = ?", (callback_data.n,)).fetchone()[0]
-    await callback.message.edit_reply_markup(reply_markup=status_kb(f"В любимых: {name}"))
+    name = app.person_name(callback_data.n)
+    if callback_data.n in favorite_people(app.conn, callback.from_user.id):
+        await callback.message.edit_reply_markup(reply_markup=status_kb(f"Уже в любимых: {name}"))
+    else:
+        with app.conn:
+            add_favorite(app.conn, callback.from_user.id, callback_data.n, "manual")
+        await callback.message.edit_reply_markup(reply_markup=undo_kb(f"В любимых: {name}", "person", callback_data.n))
     await callback.message.answer("Ещё кого-нибудь? Напиши имя или переходи к следующему этапу.",
                                   reply_markup=nav_kb(*PEOPLE_NAV))
     await callback.answer()
+
+
+@router.callback_query(UndoCb.filter(F.k == "film"))
+async def undo_film(callback: CallbackQuery, callback_data: UndoCb, app: App) -> None:
+    app.undo_answer(callback.from_user.id, callback_data.i, "onboarding")
+    await callback.message.edit_reply_markup(reply_markup=status_kb(f"Отменено: {app.label(callback_data.i)}"))
+    await callback.answer("Отменил")
+
+
+@router.callback_query(UndoCb.filter(F.k == "person"))
+async def undo_person(callback: CallbackQuery, callback_data: UndoCb, app: App) -> None:
+    with app.conn:
+        remove_favorite(app.conn, callback.from_user.id, callback_data.i)
+    name = app.person_name(callback_data.i)
+    await callback.message.edit_reply_markup(reply_markup=status_kb(f"Отменено: {name}"))
+    await callback.answer("Отменил")
 
 
 @router.callback_query(Onboarding.people, NavCb.filter(F.a == "people_done"))
@@ -228,7 +250,7 @@ async def calibration_back(callback: CallbackQuery, state: FSMContext, bot: Bot,
         await callback.answer()
         return
     prev = data["shown"][-1]
-    app.undo_calibration(callback.from_user.id, prev)
+    app.undo_answer(callback.from_user.id, prev, "calibration")
     await state.update_data(shown=data["shown"][:-1], answers=data["answers"][:-1])
     await callback.answer("Ответ отменён")
     await show_calibration(bot, callback.from_user.id, state, app, tconst=prev)

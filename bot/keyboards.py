@@ -42,6 +42,13 @@ class NavCb(CallbackData, prefix="n"):
     a: str
 
 
+class UndoCb(CallbackData, prefix="u"):
+    """Отмена выбора: k — что отменяем (film — любимый фильм в знакомстве, person — любимый человек
+    в знакомстве, fav — любимый человек в /favorites), i — ID фильма или человека."""
+    k: str
+    i: str
+
+
 # «Уже видел» нет: оценка и так значит, что фильм просмотрен
 ACTIONS = {"ni": "Не интересно", "lt": "Посмотрю позже", "hd": "Скрыть навсегда"}
 STATUS = {"r": "Оценка {v} ★", "ns": "Не смотрел", "sk": "Пропущено", "sn": "В списке «видел»",
@@ -107,6 +114,22 @@ def status_kb(text: str, trailer: str | None = None, watch: str | None = None,
     sizes = _links(kb, trailer, watch)
     kb.button(text=f"✓ {text}", callback_data=NavCb(a="noop"))
     kb.adjust(*sizes, 1, *_nav(kb, nav, extra))
+    return kb.as_markup()
+
+
+def person_button(p: dict, favorites: set[str]) -> str:
+    """Подпись человека в результатах поиска; кто уже в любимых — отмечен, чтобы не добавлять второй раз."""
+    if p["nconst"] in favorites:
+        return f"✓ {p['name']} — уже в любимых"
+    return f"{p['name']} ({p['films']} фильм.)"
+
+
+def undo_kb(text: str, kind: str, item: str) -> InlineKeyboardMarkup:
+    """После выбора любимого: строка с итогом и кнопка «Отменить»."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"✓ {text}", callback_data=NavCb(a="noop"))
+    kb.button(text="↩ Отменить", callback_data=UndoCb(k=kind, i=item))
+    kb.adjust(1)
     return kb.as_markup()
 
 

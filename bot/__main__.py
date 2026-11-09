@@ -7,6 +7,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand
 from dotenv import load_dotenv
 
@@ -53,7 +54,9 @@ async def main() -> None:
     log.info("загрузка данных и моделей…")
     app = App()
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher()
+    # нажатия одного пользователя — по очереди: при параллельной обработке быстрые нажатия читали
+    # одно и то же старое состояние и затирали друг друга (выбор жанров терял отметки)
+    dp = Dispatcher(events_isolation=SimpleEventIsolation())
     dp["app"] = app
 
     dp.update.outer_middleware(analytics.middleware(app.conn))
