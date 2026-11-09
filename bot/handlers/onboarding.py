@@ -101,6 +101,7 @@ async def back_to_genres(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(Onboarding.films, F.text, NOT_COMMAND)
 async def search_film(message: Message, app: App) -> None:
     found = app.search_movies(message.text)
+    app.log_search(message.from_user.id, "film", message.text, len(found))
     if not found:
         await message.answer("Не нашёл такой фильм. Попробуй иначе — можно по-английски.",
                              reply_markup=nav_kb(*FILMS_NAV))
@@ -116,6 +117,7 @@ async def search_film(message: Message, app: App) -> None:
 
 @router.callback_query(Onboarding.films, PickCb.filter())
 async def pick_film(callback: CallbackQuery, callback_data: PickCb, app: App) -> None:
+    app.mark_search_chosen(callback.from_user.id, "film")
     app.rate(callback.from_user.id, callback_data.t, 5, "onboarding")
     await callback.message.edit_reply_markup(reply_markup=undo_kb(f"Добавил: {app.label(callback_data.t)}", "film",
                                                                   callback_data.t))
@@ -145,6 +147,7 @@ async def back_to_films(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(Onboarding.people, F.text, NOT_COMMAND)
 async def search_person(message: Message, app: App) -> None:
     found = await app.search_people(message.text)
+    app.log_search(message.from_user.id, "person", message.text, len(found))
     if not found:
         await message.answer("Никого не нашёл. Попробуй иначе — например, фамилию латиницей.",
                              reply_markup=nav_kb(*PEOPLE_NAV))
@@ -161,6 +164,7 @@ async def search_person(message: Message, app: App) -> None:
 
 @router.callback_query(Onboarding.people, PersonCb.filter(F.a == "add"))
 async def pick_person(callback: CallbackQuery, callback_data: PersonCb, app: App) -> None:
+    app.mark_search_chosen(callback.from_user.id, "person")
     name = app.person_name(callback_data.n)
     if callback_data.n in favorite_people(app.conn, callback.from_user.id):
         await callback.message.edit_reply_markup(reply_markup=status_kb(f"Уже в любимых: {name}"))

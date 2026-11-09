@@ -4,7 +4,7 @@ import logging
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, ErrorEvent, Message
 
-from bot import texts
+from bot import analytics, texts
 from bot.handlers.recommend import start_query
 from bot.keyboards import NavCb, nav_kb
 from bot.services import App
@@ -53,11 +53,13 @@ async def text_kind(callback: CallbackQuery, callback_data: NavCb, bot: Bot, app
 async def stale(callback: CallbackQuery) -> None:
     """Кнопка из старого сообщения, которая уже не к месту (например, шаг знакомства пройден).
     Должна стоять после всех остальных обработчиков кнопок — она ловит любую."""
+    analytics.mark_fallback()
     await callback.answer("Эта кнопка уже не работает. Посмотри /help.")
 
 
 @router.message()
 async def fallback(message: Message) -> None:
+    analytics.mark_fallback()
     await message.answer(texts.NOT_UNDERSTOOD)
 
 

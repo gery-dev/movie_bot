@@ -232,3 +232,208 @@ def test_person_already_in_favorites_is_marked():
     assert person_button(p, set()) == "Андрей Тарковский (7 фильм.)"
     assert person_button(p, {"nm0853380"}) == "✓ Андрей Тарковский — уже в любимых"
 
+
+def _app_with_db(tmp_path):
+    import bot.services as services
+    from db.database import connect
+
+    app = services.App.__new__(services.App)  # без загрузки моделей: нужна только БД
+    app.conn = connect(tmp_path / "t.db")
+    app.conn.executemany("INSERT INTO movies (tconst, title) VALUES (?, ?)", [(f"tt{i:02d}", str(i)) for i in range(5)])
+    return app
+
+
+def test_shown_log_keeps_position_ratings_model_and_mood(tmp_path):
+    import json
+
+    from recsys.profile import record_rating
+    from recsys.recommender import MODEL_VERSION
+
+    app = _app_with_db(tmp_path)
+    record_rating(app.conn, 1, "tt00", 5, "calibration")
+    record_rating(app.conn, 1, "tt01", 3, "calibration")
+    app.log_shown(1, ["tt02", "tt03"], "today", start_position=4, mood={"mood": "fun", "time": "120"})
+    app.log_shown(1, ["tt04"])  # позиция и настроение необязательны
+    rows = [dict(r) for r in app.conn.execute(
+        "SELECT mode, position, n_ratings, model_version, mood FROM recommendations ORDER BY id")]
+    assert [(r["position"], r["n_ratings"], r["model_version"]) for r in rows] == [
+        (4, 2, MODEL_VERSION), (5, 2, MODEL_VERSION), (None, 2, MODEL_VERSION)]
+    assert json.loads(rows[0]["mood"]) == {"mood": "fun", "time": "120"} and rows[2]["mood"] is None
+    assert [r["mode"] for r in rows] == ["today", "today", "recommend"]
+
+
+def test_search_log_keeps_length_not_text(tmp_path):
+    app = _app_with_db(tmp_path)
+    first = app.log_search(1, "film", "интерстеллар", 3)
+    app.log_search(1, "film", "ыыы", 0)  # ничего не нашлось — выбрать нечего
+    app.mark_search_chosen(1, "film")      # выбор относится к последнему поиску, где что-то нашлось
+    text_id = app.log_search(1, "text", "что-нибудь повеселее", 20)
+    app.mark_search_chosen(1, "text", text_id)
+    rows = [tuple(r) for r in app.conn.execute("SELECT kind, query_len, found, chosen FROM search_log ORDER BY id")]
+    assert rows == [("film", 12, 3, 1), ("film", 3, 0, 0), ("text", 20, 20, 1)] and first == 1
+    assert "интерстеллар" not in repr(list(app.conn.iterdump()))
+
+
+def test_survey_offer_logged_each_time(tmp_path):
+    app = _app_with_db(tmp_path)
+    app.log_survey_offer(1, 3)
+    app.log_survey_offer(1, 3)  # повторное предложение (например, после перезапуска бота) видно отдельной строкой
+    assert app.conn.execute("SELECT count(*), min(wave) FROM survey_offers WHERE user_id = 1").fetchone()[:] == (2, 3)
+
+
+def test_event_knows_whether_a_real_handler_took_it(tmp_path):
+    """events.matched: 1 — настоящий обработчик, 0 — заглушка «не понял» или обработчика нет совсем."""
+    import asyncio
+
+    from aiogram import Bot, Dispatcher, F
+    from aiogram.types import Message
+
+    from bot import analytics
+    from db.database import connect
+
+    conn = connect(tmp_path / "t.db")
+    dp = Dispatcher()
+    dp.update.outer_middleware(analytics.middleware(conn))
+
+    @dp.message(F.text == "ok")
+    async def real(message: Message) -> None:
+        pass
+
+    @dp.message(F.text == "boom")
+    async def broken(message: Message) -> None:
+        raise RuntimeError("сбой внутри настоящего обработчика")
+
+    @dp.message()
+    async def fallback(message: Message) -> None:
+        analytics.mark_fallback()
+
+    async def run() -> None:
+        bot = Bot("123:TEST")
+        for text in ("ok", "что это", "ok"):  # подряд в одной задаче: флаг прошлого обновления не должен остаться
+            await dp.feed_update(bot, _update(text=text))
+        with pytest.raises(RuntimeError):  # ошибка в обработчике — он всё же настоящий (в боте её ловит router.errors)
+            await dp.feed_update(bot, _update(text="boom"))
+
+    asyncio.run(run())
+    rows = [tuple(r) for r in conn.execute("SELECT matched, error FROM events ORDER BY id")]
+    assert rows == [(1, 0), (0, 0), (1, 0), (1, 1)]
+
+    conn2 = connect(tmp_path / "t2.db")
+    empty = Dispatcher()  # ни одного обработчика → UNHANDLED
+    empty.update.outer_middleware(analytics.middleware(conn2))
+    asyncio.run(empty.feed_update(Bot("123:TEST"), _update(text="ok")))
+    assert conn2.execute("SELECT matched FROM events").fetchone()[0] == 0
+
+
+def test_migration_is_repeatable_and_keeps_rows(tmp_path):
+    import sqlite3
+
+    from db.database import connect
+
+    old = sqlite3.connect(tmp_path / "old.db")
+    old.execute("CREATE TABLE recommendations (id INTEGER PRIMARY KEY, user_id INTEGER, tconst TEXT, "
+                "shown_at TEXT, asked_at TEXT, answer TEXT, mode TEXT)")
+    old.execute("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, ts TEXT, kind TEXT NOT NULL, "
+                "name TEXT, detail TEXT, state TEXT, duration_ms INTEGER, error INTEGER NOT NULL DEFAULT 0)")
+    old.execute("INSERT INTO recommendations (user_id, tconst, mode) VALUES (1, 'tt01', 'recommend')")
+    old.execute("INSERT INTO events (user_id, kind) VALUES (1, 'command')")
+    old.commit()
+    old.close()
+    for _ in range(2):  # второй запуск ничего не ломает и не дублирует
+        conn = connect(tmp_path / "old.db")
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(recommendations)")]
+        assert {"position", "n_ratings", "model_version", "mood"} <= set(cols) and len(cols) == len(set(cols))
+        assert "matched" in {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+        assert conn.execute("SELECT position, n_ratings, model_version, mood FROM recommendations").fetchone()[:] == (
+            None, None, None, None)
+        assert conn.execute("SELECT matched FROM events").fetchone()[0] is None
+        assert conn.execute("SELECT count(*) FROM search_log").fetchone()[0] == 0
+        conn.close()
+
+
+def test_reason_callback_fits_telegram_limit():
+    from bot.keyboards import ReasonCb
+    assert len(ReasonCb(t="tt12345678", r="genre").pack().encode()) <= 64
+
+
+def test_set_reason_goes_to_latest_not_interested_row_only(tmp_path):
+    from recsys.profile import ensure_user
+
+    app = _app_with_db(tmp_path)
+    ensure_user(app.conn, 1)
+    app.conn.executemany("INSERT INTO recommendations (user_id, tconst, answer) VALUES (1, ?, ?)",
+                         [("tt01", "not_interested"), ("tt01", "not_interested"), ("tt02", "rated"),
+                          ("tt03", None)])
+    app.set_reason(1, "tt01", "genre")
+    app.set_reason(1, "tt02", "seen")   # на оцененный фильм причина отказа не ставится
+    app.set_reason(1, "tt03", "seen")   # и на фильм без ответа тоже
+    rows = [r[0] for r in app.conn.execute("SELECT reason FROM recommendations ORDER BY id")]
+    assert rows == [None, "genre", None, None]
+
+
+def _reason_fakes():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    sent, deleted = [], []
+
+    class FakeBot:
+        async def send_message(self, chat_id, text, reply_markup=None):
+            sent.append((chat_id, text))
+            return SimpleNamespace(message_id=100 + len(sent))
+
+        async def delete_message(self, chat_id, message_id):
+            deleted.append(message_id)
+
+    def callback(user, message_id=7):
+        return SimpleNamespace(from_user=SimpleNamespace(id=user), answer=AsyncMock(),
+                               message=SimpleNamespace(message_id=message_id, edit_reply_markup=AsyncMock()))
+    return FakeBot(), sent, deleted, callback
+
+
+def test_not_interested_asks_why_and_replaces_unanswered_question(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from bot.handlers import recommend
+    from bot.keyboards import MovieCb
+    from bot.services import Carousel
+
+    async def fake_advance(bot, user, app, new_message=False):
+        return True
+    monkeypatch.setattr(recommend, "advance", fake_advance)
+    bot, sent, deleted, callback = _reason_fakes()
+    app = SimpleNamespace(carousels={1: Carousel(films=["tt01", "tt02"], message_id=7)}, reason_msgs={},
+                          react=lambda *a, **k: None, label=lambda t: f"Фильм <{t}>")
+
+    async def press(user, action, film):
+        await recommend.card_answer(callback(user), MovieCb(a=action, t=film, c="rec"), None, bot, app)
+
+    async def run():
+        await press(1, "ni", "tt01")
+        assert len(sent) == 1 and "&lt;tt01&gt;" in sent[0][1] and app.reason_msgs == {1: 101}
+        await press(1, "lt", "tt02")    # «позже» причину не спрашивает
+        assert len(sent) == 1
+        await press(1, "ni", "tt02")    # новый вопрос заменяет прежний без ответа
+        assert len(sent) == 2 and deleted == [101] and app.reason_msgs == {1: 102}
+        await press(2, "ni", "tt01")    # карточка не из подборки: статус на месте, вопрос тоже
+        assert len(sent) == 3 and app.reason_msgs == {1: 102, 2: 103}
+    asyncio.run(run())
+
+
+def test_answered_reason_is_saved_and_not_deleted_later(tmp_path):
+    import asyncio
+
+    from bot.handlers import recommend
+    from bot.keyboards import ReasonCb
+    from recsys.profile import ensure_user
+
+    app = _app_with_db(tmp_path)
+    ensure_user(app.conn, 1)
+    app.conn.execute("INSERT INTO recommendations (user_id, tconst, answer) VALUES (1, 'tt01', 'not_interested')")
+    app.reason_msgs = {1: 55}
+    _, _, _, callback = _reason_fakes()
+    asyncio.run(recommend.reason_answer(callback(1, 55), ReasonCb(t="tt01", r="kind"), app))
+    asyncio.run(recommend.reason_answer(callback(1, 56), ReasonCb(t="tt01", r="нет-такой"), app))  # чужой код игнорируется
+    assert app.conn.execute("SELECT reason FROM recommendations").fetchone()[0] == "kind"
+    assert app.reason_msgs == {}  # отвеченный вопрос из списка «ждут ответа» убран

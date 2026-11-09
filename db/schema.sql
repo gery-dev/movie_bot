@@ -133,7 +133,12 @@ CREATE TABLE IF NOT EXISTS recommendations (
     shown_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     asked_at    TEXT,                      -- когда бот спросил, посмотрел ли
     answer      TEXT,                      -- rated | seen | not_interested | later | hidden | ignored
-    mode        TEXT                       -- recommend | today | query | new | cinema
+    mode        TEXT,                      -- recommend | today | query | new | cinema
+    position    INTEGER,                   -- какой по счёту в подборке (с 1)
+    n_ratings   INTEGER,                   -- сколько оценок было у человека в момент показа
+    model_version TEXT,                    -- recsys.recommender.MODEL_VERSION на момент показа
+    mood        TEXT,                      -- /today: JSON ответов опроса (коды кнопок, не текст)
+    reason      TEXT                       -- при answer = not_interested: seen | genre | kind (необязательный вопрос «Почему?»)
 );
 CREATE INDEX IF NOT EXISTS idx_recommendations_open ON recommendations(answer, shown_at);
 
@@ -146,6 +151,26 @@ CREATE TABLE IF NOT EXISTS survey (
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- когда опрос предложили (в survey пишется только ответ); повторное предложение — новая строка
+CREATE TABLE IF NOT EXISTS survey_offers (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    wave        INTEGER NOT NULL,
+    offered_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- поиск фильмов, людей и обычным текстом: сам запрос не храним, только длину
+CREATE TABLE IF NOT EXISTS search_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    ts          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    kind        TEXT NOT NULL,             -- film | person | text
+    query_len   INTEGER NOT NULL,
+    found       INTEGER NOT NULL,          -- сколько результатов показали
+    chosen      INTEGER NOT NULL DEFAULT 0 -- 1: выбрал из списка (film, person) или ответил на фильм из выдачи (text)
+);
+CREATE INDEX IF NOT EXISTS idx_search_log_user ON search_log(user_id, id);
+
 -- журнал действий для аналитики: каждое обновление от Telegram, без текста сообщений
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,7 +181,8 @@ CREATE TABLE IF NOT EXISTS events (
     detail      TEXT,                      -- остальные данные кнопки или параметр команды
     state       TEXT,                      -- шаг сценария (состояние FSM) в момент действия
     duration_ms INTEGER,                   -- сколько бот обрабатывал
-    error       INTEGER NOT NULL DEFAULT 0
+    error       INTEGER NOT NULL DEFAULT 0,
+    matched     INTEGER                    -- 1: нашёлся настоящий обработчик; 0: дошло до «не понял» / «кнопка устарела»; NULL: до появления столбца
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, ts);

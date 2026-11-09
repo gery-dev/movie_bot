@@ -49,8 +49,16 @@ class UndoCb(CallbackData, prefix="u"):
     i: str
 
 
-# «Уже видел» нет: оценка и так значит, что фильм просмотрен
+class ReasonCb(CallbackData, prefix="rs"):
+    """Причина отказа «Не интересно»: t — фильм, r — код из REASONS."""
+    t: str
+    r: str
+
+
+# «Уже видел» отдельной кнопки нет: оценка и так значит, что фильм просмотрен
 ACTIONS = {"ni": "Не интересно", "lt": "Посмотрю позже", "hd": "Скрыть навсегда"}
+# необязательный вопрос после «Не интересно» (ТЗ п. 4.1 называет «уже видел» причиной отказа)
+REASONS = {"seen": "Уже видел", "genre": "Не мой жанр", "kind": "Не хочу такое кино"}
 STATUS = {"r": "Оценка {v} ★", "ns": "Не смотрел", "sk": "Пропущено", "sn": "В списке «видел»",
           "ni": "Не интересно", "lt": "В планах", "hd": "Скрыт", "uh": "Возвращён в подборки"}
 
@@ -114,6 +122,14 @@ def status_kb(text: str, trailer: str | None = None, watch: str | None = None,
     sizes = _links(kb, trailer, watch)
     kb.button(text=f"✓ {text}", callback_data=NavCb(a="noop"))
     kb.adjust(*sizes, 1, *_nav(kb, nav, extra))
+    return kb.as_markup()
+
+
+def reason_kb(tconst: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for code, label in REASONS.items():
+        kb.button(text=label, callback_data=ReasonCb(t=tconst, r=code))
+    kb.adjust(2, 1)  # в одну строку три подписи на телефоне не помещаются
     return kb.as_markup()
 
 

@@ -21,7 +21,12 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
 NEW_COLUMNS = [("recommendations", "mode", "TEXT"),  # recommend | today | query — для онлайн-статистики
                ("movies", "kp_id", "INTEGER"),  # ID Кинопоиска для прямой ссылки
                ("people", "name_ru", "TEXT"), ("people", "aka_ru", "TEXT"),  # русские имена для поиска
-               ("users", "genres", "TEXT")]  # любимые жанры из знакомства
+               ("users", "genres", "TEXT"),  # любимые жанры из знакомства
+               # журнал показов для следующей выборки онлайн-теста
+               ("recommendations", "position", "INTEGER"), ("recommendations", "n_ratings", "INTEGER"),
+               ("recommendations", "model_version", "TEXT"), ("recommendations", "mood", "TEXT"),
+               ("recommendations", "reason", "TEXT"),  # почему «не интересно»
+               ("events", "matched", "INTEGER")]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

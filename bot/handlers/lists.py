@@ -104,6 +104,7 @@ async def favorite_add(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(FavoriteSearch.query, F.text, ~F.text.startswith("/"))
 async def favorite_search(message: Message, app: App) -> None:
     found = await app.search_people(message.text)
+    app.log_search(message.from_user.id, "person", message.text, len(found))
     if not found:
         await message.answer("Никого не нашёл. Попробуй иначе — например, фамилию латиницей.")
         return
@@ -118,6 +119,7 @@ async def favorite_search(message: Message, app: App) -> None:
 @router.callback_query(PersonCb.filter(F.a == "add"))
 async def favorite_pick(callback: CallbackQuery, callback_data: PersonCb, state: FSMContext, bot: Bot,
                         app: App) -> None:
+    app.mark_search_chosen(callback.from_user.id, "person")
     name = app.person_name(callback_data.n)
     if callback_data.n in favorite_people(app.conn, callback.from_user.id):
         await callback.message.edit_reply_markup(reply_markup=status_kb(f"Уже в любимых: {name}"))

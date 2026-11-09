@@ -39,6 +39,9 @@ from recsys.today import today_filter, today_scores
 #    информация, поэтому оставлен небольшой C = 0,1. Главное место любимых — отдельный список их
 #    непросмотренных фильмов (recsys/favorites.py). Перепроверить на живых пользователях (этап 6).
 A, B, C = 1.0, 0.3, 0.1
+# Пишется в recommendations.model_version при каждом показе. Менять вручную, когда меняется то, что влияет
+# на подборку: ALS-векторы, веса (A, B, C, W_NEW, W_GENRE, W_ERA, W_LANG, MMR), MIN_VOTES, формула.
+MODEL_VERSION = "als32m-wnew0.35"
 CANDIDATES = 300
 CF_WEIGHT = 0.5            # доля ALS в долгосрочной части (этап 2)
 # Холодный старт (recsys/cold_start.py, 150 пользователей MovieLens, NDCG@10; без данных — 0,048):

@@ -1,6 +1,7 @@
 """Подборка (/recommend) — одна карточка, которая листается на месте; опрос на сегодня (/today);
 новинки (/new); ответы на карточках; отзыв и автопредложение любимых."""
 from datetime import datetime
+from html import escape
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -11,7 +12,8 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.cards import build_card, send_card, show
-from bot.keyboards import MovieCb, NavCb, PersonCb, STATUS, TodayCb, movie_kb, nav_kb, status_kb, today_kb
+from bot.keyboards import (MovieCb, NavCb, PersonCb, REASONS, ReasonCb, STATUS, TodayCb, movie_kb, nav_kb, reason_kb,
+                           status_kb, today_kb)
 from bot.services import App, Carousel
 from bot.states import Review, Today
 from bot.texts import films_word
@@ -66,10 +68,11 @@ async def start_person_films(bot: Bot, user_id: int, app: App, name: str, films:
 async def start_query(bot: Bot, user_id: int, app: App, text: str) -> None:
     """Поиск обычным текстом: «как „Интерстеллар“, но повеселее»."""
     df, parsed = app.rec.search(app.conn, user_id, text, k=QUERY_RESULTS)
+    search_id = app.log_search(user_id, "text", text, len(df))
     if df.empty:
         await bot.send_message(user_id, "Ничего не нашёл под такой запрос. Попробуй сформулировать иначе.")
         return
-    await start_carousel(bot, user_id, app, Carousel(films=df.tconst.tolist(), query=text[:60],
+    await start_carousel(bot, user_id, app, Carousel(films=df.tconst.tolist(), query=text[:60], search_id=search_id,
                                                      why=dict(zip(df.tconst, df.why))))
 
 
@@ -134,7 +137,7 @@ async def render(bot: Bot, user_id: int, app: App, new_message: bool = False, ke
         await _drop_keyboard(bot, user_id, old_id)
     if t not in c.logged and not (c.person or c.group):  # фильмы человека — не рекомендация, в журнал показов не пишем
         mode = c.kind or ("query" if c.query else "today" if c.answers is not None else "recommend")
-        app.log_shown(user_id, [t], mode)
+        app.log_shown(user_id, [t], mode, start_position=c.idx + 1, mood=c.answers)
         c.logged.add(t)
 
 
@@ -299,6 +302,8 @@ async def card_answer(callback: CallbackQuery, callback_data: MovieCb, state: FS
     status = STATUS[a].format(v=callback_data.v)
     await callback.answer("Записал")
     c = _carousel_of(callback, app)
+    if c is not None and c.search_id:  # поиск текстом дал результат, на который человек ответил
+        app.mark_search_chosen(user, "text", c.search_id)
     if c is not None and c.current == t:
         c.statuses[t] = status
     if a == "r":  # после оценки — вопрос об отзыве, потом следующий фильм
@@ -317,6 +322,35 @@ async def card_answer(callback: CallbackQuery, callback_data: MovieCb, state: FS
             await bot.send_message(user, nothing_more(c))
     else:
         await callback.message.edit_reply_markup(reply_markup=status_kb(status))
+    if a == "ni":
+        await ask_reason(bot, user, app, t)
+
+
+# --- необязательный вопрос «Почему не интересно?» ---
+
+async def ask_reason(bot: Bot, user_id: int, app: App, tconst: str) -> None:
+    """Отдельным сообщением под подборкой, чтобы не тормозить листание. Вопрос без ответа убирается,
+    когда задаём следующий: в чате не копятся старые вопросы."""
+    old = app.reason_msgs.pop(user_id, None)
+    if old:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=old)
+        except TelegramBadRequest:
+            pass
+    msg = await bot.send_message(user_id, f"Почему «{escape(app.label(tconst))}» не подошёл? Можно не отвечать.",
+                                 reply_markup=reason_kb(tconst))
+    app.reason_msgs[user_id] = msg.message_id
+
+
+@router.callback_query(ReasonCb.filter())
+async def reason_answer(callback: CallbackQuery, callback_data: ReasonCb, app: App) -> None:
+    user = callback.from_user.id
+    if callback_data.r in REASONS:
+        app.set_reason(user, callback_data.t, callback_data.r)
+        if app.reason_msgs.get(user) == callback.message.message_id:
+            del app.reason_msgs[user]
+        await callback.message.edit_reply_markup(reply_markup=status_kb(f"Не интересно: {REASONS[callback_data.r].lower()}"))
+    await callback.answer("Спасибо!")
 
 
 # --- отзыв, затем продолжение ---
@@ -397,6 +431,7 @@ async def offer_survey(bot: Bot, user_id: int, app: App) -> None:
     kb.adjust(1)
     await bot.send_message(user_id, f"Уже {wave} оценок фильмов из подборок — спасибо! Насколько подборки тебе подходят?",
                            reply_markup=kb.as_markup())
+    app.log_survey_offer(user_id, wave)  # после отправки: если бота заблокировали, предложения не было
 
 
 @router.callback_query(SurveyCb.filter())

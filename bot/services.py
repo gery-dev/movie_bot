@@ -1,4 +1,5 @@
 """Общие объекты бота: БД, рекомендательная модель, клиент TMDB и действия пользователя."""
+import json
 import logging
 import re
 import sqlite3
@@ -12,7 +13,7 @@ from db.database import connect
 from recsys import calibration
 from recsys.models import ALS, Catalog
 from recsys.profile import ensure_user, rebuild_profile, record_rating, record_reaction, set_list
-from recsys.recommender import Recommender
+from recsys.recommender import MODEL_VERSION, Recommender
 from recsys.search import NameIndex
 from recsys.sentiment import load as load_sentiment, sentiment
 from recsys.train_als import ALS_FILE
@@ -36,6 +37,7 @@ class Carousel:
     query: str | None = None     # текст запроса, если это результаты поиска обычным текстом
     group: str | None = None     # имена участников, если это подборка для компании (/together)
     kind: str | None = None      # new — новинки по вкусу (/new)
+    search_id: int | None = None  # строка search_log, если это результаты поиска текстом
 
     @property
     def fixed(self) -> bool:
@@ -71,6 +73,7 @@ class App:
         self.carousels: dict[int, Carousel] = {}             # пользователь → подборка, которую он листает
         self.pending_text: dict[int, str] = {}               # текст, про который спросили «отзыв или поиск?»
         self.survey_offered: set[tuple[int, int]] = set()     # (пользователь, волна) — опрос уже задан
+        self.reason_msgs: dict[int, int] = {}                 # пользователь → сообщение «Почему не интересно?» без ответа
         self._build_search()
 
     # --- поиск ---
@@ -174,11 +177,46 @@ class App:
                 self.conn.execute("DELETE FROM user_lists WHERE user_id = ? AND tconst = ? AND list = 'hidden'",
                                   (user_id, tconst))
 
-    def log_shown(self, user_id: int, tconsts: list[str], mode: str = "recommend") -> None:
+    def log_shown(self, user_id: int, tconsts: list[str], mode: str = "recommend",
+                  start_position: int | None = None, mood: dict | None = None) -> None:
+        """Записать показ. start_position — место первого фильма в подборке (с 1); mood — ответы /today."""
         with self.conn:
             ensure_user(self.conn, user_id)  # подборку могут попросить до /start
-            self.conn.executemany("INSERT INTO recommendations (user_id, tconst, mode) VALUES (?, ?, ?)",
-                                  [(user_id, t, mode) for t in tconsts])
+            n_ratings = self.conn.execute("SELECT count(*) FROM ratings WHERE user_id = ?", (user_id,)).fetchone()[0]
+            mood_json = json.dumps(mood, ensure_ascii=False, sort_keys=True) if mood else None
+            self.conn.executemany(
+                """INSERT INTO recommendations (user_id, tconst, mode, position, n_ratings, model_version, mood)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [(user_id, t, mode, None if start_position is None else start_position + i, n_ratings,
+                  MODEL_VERSION, mood_json) for i, t in enumerate(tconsts)])
+
+    def log_search(self, user_id: int, kind: str, query: str, found: int) -> int:
+        """Записать поиск (kind: film | person | text): длина запроса и число найденного, без самого текста."""
+        with self.conn:
+            cur = self.conn.execute("INSERT INTO search_log (user_id, kind, query_len, found) VALUES (?, ?, ?, ?)",
+                                    (user_id, kind, len(query), found))
+        return cur.lastrowid
+
+    def mark_search_chosen(self, user_id: int, kind: str, search_id: int | None = None) -> None:
+        """Человек выбрал результат: по search_id, а без него — в последнем поиске этого вида, где что-то нашлось."""
+        with self.conn:
+            if search_id is not None:
+                self.conn.execute("UPDATE search_log SET chosen = 1 WHERE id = ?", (search_id,))
+            else:
+                self.conn.execute(
+                    """UPDATE search_log SET chosen = 1 WHERE id = (SELECT max(id) FROM search_log
+                       WHERE user_id = ? AND kind = ? AND found > 0)""", (user_id, kind))
+
+    def set_reason(self, user_id: int, tconst: str, reason: str) -> None:
+        """Причина отказа «не интересно» (коды — REASONS в keyboards.py) к последнему такому показу фильма."""
+        with self.conn:
+            self.conn.execute(
+                """UPDATE recommendations SET reason = ? WHERE id = (SELECT max(id) FROM recommendations
+                   WHERE user_id = ? AND tconst = ? AND answer = 'not_interested')""", (reason, user_id, tconst))
+
+    def log_survey_offer(self, user_id: int, wave: int) -> None:
+        with self.conn:
+            self.conn.execute("INSERT INTO survey_offers (user_id, wave) VALUES (?, ?)", (user_id, wave))
 
     def _answer(self, user_id: int, tconst: str, answer: str) -> None:
         self.conn.execute(
