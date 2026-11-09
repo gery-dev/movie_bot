@@ -4,6 +4,9 @@ ratings.csv (Name, Year, Rating 0,5–5) → оценки 1–5; watched.csv →
 watchlist.csv → «в планах». Фильм ищем в БД по названию и году (допуск ±1 год), не нашли — через
 поиск TMDB. Уже поставленные в боте оценки не перезаписываем. Несопоставленные фильмы возвращаем,
 чтобы показать пользователю (и учесть в отчёте).
+
+Кодировка csv — UTF-8 (с BOM или без) или cp1251 (так сохраняет Excel). Если переносить нечего, причина
+остаётся в ImportResult.reason (или в ExportError), чтобы бот объяснил её человеку и записал в лог.
 """
 import asyncio
 import io
@@ -30,10 +33,39 @@ class ImportResult:
     total: int = 0
     unmatched: list[str] = field(default_factory=list)
     seconds: float = 0.0
+    rows: dict[str, int] = field(default_factory=dict)  # строк в файлах: ratings / watched / watchlist
+    encoding: str = ""                                  # utf-8 или cp1251 (через запятую, если файлов несколько)
+    reason: str | None = None                           # почему переносить нечего: no_known_files | no_name_column | empty
 
     @property
     def matched_share(self) -> float:
         return 1 - len(self.unmatched) / self.total if self.total else 0.0
+
+
+class ExportError(Exception):
+    """Файл не разобрать как csv. reason — короткий код для лога и ответа бота: empty | not_csv | encoding."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def read_csv_bytes(raw: bytes) -> pd.DataFrame:
+    """csv из байтов: UTF-8 (BOM снимается сам), иначе cp1251. Кодировка остаётся в df.attrs['encoding']."""
+    for encoding, label in (("utf-8-sig", "utf-8"), ("cp1251", "cp1251")):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        try:
+            df = pd.read_csv(io.StringIO(text))
+        except pd.errors.EmptyDataError:
+            raise ExportError("empty") from None
+        except pd.errors.ParserError:
+            raise ExportError("not_csv") from None
+        df.attrs["encoding"] = label
+        return df
+    raise ExportError("encoding")
 
 
 def read_export(path: Path) -> dict[str, pd.DataFrame]:
@@ -46,9 +78,9 @@ def read_export(path: Path) -> dict[str, pd.DataFrame]:
                 base = name.rsplit("/", 1)[-1].lower()
                 # в выгрузке есть и папки (например, deleted/ratings.csv) — берём только верхний уровень
                 if base in FILES and "/" not in name.strip("/"):
-                    out[FILES[base]] = pd.read_csv(io.BytesIO(z.read(name)))
+                    out[FILES[base]] = read_csv_bytes(z.read(name))
         return out
-    df = pd.read_csv(path)
+    df = read_csv_bytes(path.read_bytes())
     kind = FILES.get(path.name.lower()) or ("ratings" if "Rating" in df.columns else "watched")
     return {kind: df}
 
@@ -105,9 +137,15 @@ async def import_export(conn, user_id: int, path: Path, movies: pd.DataFrame, tm
         df = data.get(kind)
         if df is None or "Name" not in df.columns:
             continue
+        res.rows[kind] = len(df)
         for row in df.itertuples(index=False):
             items.append((kind, row.Name, getattr(row, "Year", None), getattr(row, "Rating", None)))
     res.total = len({(n, y) for _, n, y, _ in items})
+    res.encoding = ",".join(sorted({df.attrs.get("encoding", "") for df in data.values()} - {""}))
+    if not items:
+        res.reason = "no_known_files" if not data else "no_name_column" if not res.rows else "empty"
+        res.seconds = time.time() - t0
+        return res
 
     found = {(n, y): matcher.find(n, y) for _, n, y, _ in items}
     missing = [k for k, v in found.items() if v is None]

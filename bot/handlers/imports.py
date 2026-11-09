@@ -13,7 +13,7 @@ from aiogram.types import Message
 from bot.keyboards import nav_kb
 from bot.services import App
 from bot.states import LetterboxdImport
-from data_pipeline.letterboxd import import_export
+from data_pipeline.letterboxd import ExportError, import_export
 from recsys.profile import rebuild_profile
 
 router = Router()
@@ -24,6 +24,19 @@ HOW_TO = (
     "1. На сайте letterboxd.com открой Settings → Data → Export your data.\n"
     "2. Скачается zip-архив — пришли его сюда файлом (можно и отдельный ratings.csv).\n\n"
     "Оценки, просмотренное и «хочу посмотреть» перенесутся; то, что ты уже оценил в боте, не изменится."
+)
+# что не так с файлом (код причины — из ExportError.reason и ImportResult.reason)
+PROBLEMS = {
+    "empty": "Файл пустой.",
+    "not_csv": "Не получилось разобрать таблицу.",
+    "encoding": "Не смог определить кодировку.",
+    "no_name_column": "В нём нет столбца Name — это не файл из выгрузки Letterboxd.",
+    "no_known_files": "В архиве нет ratings.csv, watched.csv и watchlist.csv.",
+}
+NEED_FILES = (
+    "Нужна выгрузка Letterboxd: весь zip-архив или один из файлов ratings.csv (оценки), watched.csv (просмотренное), "
+    "watchlist.csv («хочу посмотреть») со столбцами Name и Year. Пришли файл ещё раз; передумал — любая команда, "
+    "например /help."
 )
 
 
@@ -54,13 +67,23 @@ async def receive(message: Message, state: FSMContext, bot: Bot, app: App) -> No
                 res = await import_export(app.conn, message.from_user.id, path,
                                           app.rec.movies.merge(_extra(app), on="tconst"), app.tmdb)
                 rebuild_profile(app.conn, app.rec.profiler, message.from_user.id)
+        except ExportError as e:  # в лог — только причина, без содержимого файла
+            log.warning("letterboxd import: user %s, file not read, reason=%s", message.from_user.id, e.reason)
+            await message.answer(f"{PROBLEMS[e.reason]}\n\n{NEED_FILES}")
+            return
         except Exception:
             log.exception("letterboxd import failed")
             await message.answer("Не получилось прочитать файл. Проверь, что это выгрузка Letterboxd.")
             return
+    if res.reason:  # файл прочитали, но переносить нечего
+        log.warning("letterboxd import: user %s, nothing to import, reason=%s, encoding=%s, rows=%s",
+                    message.from_user.id, res.reason, res.encoding, res.rows)
+        await message.answer(f"{PROBLEMS[res.reason]}\n\n{NEED_FILES}")
+        return
     await state.clear()
-    log.info("user %s imported letterboxd: %s rated, %s watched, %s planned, %s unmatched, %.1f s",
-             message.from_user.id, res.rated, res.watched, res.planned, len(res.unmatched), res.seconds)
+    log.info("user %s imported letterboxd: %s rated, %s watched, %s planned, %s unmatched of %s, %.1f s, "
+             "encoding=%s, rows=%s", message.from_user.id, res.rated, res.watched, res.planned, len(res.unmatched),
+             res.total, res.seconds, res.encoding, res.rows)
     text = (f"Готово за {res.seconds:.0f} с. Нашёл {res.total - len(res.unmatched)} из {res.total} фильмов "
             f"({res.matched_share:.0%}).\n"
             f"• оценок перенесено: {res.rated}\n• в «видел»: {res.watched}\n• в «в планах»: {res.planned}")

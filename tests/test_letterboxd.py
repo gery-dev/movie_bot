@@ -5,7 +5,7 @@ import zipfile
 import pandas as pd
 import pytest
 
-from data_pipeline.letterboxd import Matcher, import_export, letterboxd_rating, normalize
+from data_pipeline.letterboxd import ExportError, Matcher, import_export, letterboxd_rating, normalize
 from db.database import connect
 from recsys.profile import record_rating
 
@@ -14,7 +14,10 @@ MOVIES = pd.DataFrame([
     ("tt02", "Léon: The Professional", "Léon", 1994, 1_000_000, 101),
     ("tt03", "Brother", "Brat", 1997, 40_000, 20_992),
     ("tt04", "Brother", "Brother", 2000, 30_000, 555),  # тот же заголовок, другой год
+    ("tt05", "Брат 2", "Брат 2", 2000, 60_000, 21_000),  # кириллица — для проверки cp1251
 ], columns=["tconst", "title", "original_title", "year", "votes", "tmdb_id"])
+RATINGS_CSV = ("Date,Name,Year,Letterboxd URI,Rating\n2024-01-01,Брат 2,2000,x,4\n"
+               "2024-01-01,Spirited Away,2001,x,5\n")
 
 
 @pytest.mark.parametrize("stars, ours", [(0.5, 1), (1, 1), (2.5, 3), (3.5, 4), (4.5, 5), (5, 5)])
@@ -50,4 +53,75 @@ def test_import_zip(tmp_path):
     assert ratings == {"tt01": 2, "tt03": 3}
     assert ("tt04", "seen") in lists and ("tt02", "planned") in lists
     assert res.rated == 1 and res.skipped_existing == 1 and res.unmatched == ["Unknown Film (2019)"]
+    conn.close()
+
+
+def _db(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    conn.executemany("INSERT INTO movies (tconst, title, year) VALUES (?, ?, ?)",
+                     MOVIES[["tconst", "title", "year"]].itertuples(index=False))
+    return conn
+
+
+@pytest.mark.parametrize("encoding, label", [("utf-8", "utf-8"), ("utf-8-sig", "utf-8"), ("cp1251", "cp1251")])
+def test_import_csv_in_any_encoding(tmp_path, encoding, label):
+    """UTF-8, UTF-8 с BOM и cp1251 (Excel) читаются одинаково."""
+    path = tmp_path / "ratings.csv"
+    path.write_bytes(RATINGS_CSV.encode(encoding))
+    conn = _db(tmp_path)
+    res = asyncio.run(import_export(conn, 7, path, MOVIES))
+    assert res.rated == 2 and res.unmatched == [] and res.reason is None
+    assert res.encoding == label and res.rows == {"ratings": 2}
+    conn.close()
+
+
+def test_import_zip_in_cp1251(tmp_path):
+    zpath = tmp_path / "letterboxd.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        z.writestr("ratings.csv", RATINGS_CSV.encode("cp1251"))
+        z.writestr("watched.csv", "Date,Name,Year,Letterboxd URI\n2024-01-01,Brother,2000,x\n".encode("utf-8-sig"))
+    conn = _db(tmp_path)
+    res = asyncio.run(import_export(conn, 7, zpath, MOVIES))
+    assert res.rated == 2 and res.watched == 1
+    assert res.encoding == "cp1251,utf-8" and res.rows == {"ratings": 2, "watched": 1}
+    conn.close()
+
+
+@pytest.mark.parametrize("content, reason", [
+    ("Date,Name,Year,Letterboxd URI,Rating\n", "empty"),        # заголовок без строк
+    ("Title,Score\nSpirited Away,5\n", "no_name_column"),       # чужая таблица
+])
+def test_import_nothing_to_import_gives_reason(tmp_path, content, reason):
+    path = tmp_path / "ratings.csv"
+    path.write_text(content, encoding="utf-8")
+    conn = _db(tmp_path)
+    res = asyncio.run(import_export(conn, 7, path, MOVIES))
+    assert res.total == 0 and res.rated == 0 and res.reason == reason
+    assert conn.execute("SELECT count(*) FROM ratings").fetchone()[0] == 0
+    conn.close()
+
+
+def test_import_zip_without_known_files_gives_reason(tmp_path):
+    zpath = tmp_path / "other.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        z.writestr("diary.csv", "Date,Name,Year\n2024-01-01,Brother,1997\n")
+        z.writestr("letterboxd/ratings.csv", RATINGS_CSV)  # внутри папки — не верхний уровень выгрузки
+    conn = _db(tmp_path)
+    res = asyncio.run(import_export(conn, 7, zpath, MOVIES))
+    assert res.total == 0 and res.reason == "no_known_files"
+    conn.close()
+
+
+@pytest.mark.parametrize("raw, reason", [
+    (b"", "empty"),
+    (b"a,b\n1,2\n1,2,3,4,5\n", "not_csv"),  # строки разной длины
+    (bytes([0x98, 0x81]), "encoding"),  # не UTF-8, а в cp1251 такого байта нет
+])
+def test_unreadable_file_raises_export_error(tmp_path, raw, reason):
+    path = tmp_path / "ratings.csv"
+    path.write_bytes(raw)
+    conn = _db(tmp_path)
+    with pytest.raises(ExportError) as e:
+        asyncio.run(import_export(conn, 7, path, MOVIES))
+    assert e.value.reason == reason
     conn.close()
