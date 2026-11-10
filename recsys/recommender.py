@@ -23,7 +23,7 @@ from recsys.explain import CF_STRONG, explain, feature_label, top_features
 from recsys.favorites import favorite_people
 from recsys.features import EMB_MODEL, load_embeddings
 from recsys.models import Catalog, _unit
-from recsys.profile import Profiler, excluded_films, load_genres, user_events
+from recsys.profile import Profiler, excluded_films, load_genres, refused_films, user_events
 from recsys.query import Parsed, describe, parse, query_scores, understood
 from recsys.today import today_filter, today_scores
 
@@ -41,7 +41,7 @@ from recsys.today import today_filter, today_scores
 A, B, C = 1.0, 0.3, 0.1
 # Пишется в recommendations.model_version при каждом показе. Менять вручную, когда меняется то, что влияет
 # на подборку: ALS-векторы, веса (A, B, C, W_NEW, W_GENRE, W_ERA, W_LANG, MMR), MIN_VOTES, формула.
-MODEL_VERSION = "als32m-wnew0.35"
+MODEL_VERSION = "als32m-wnew0.35-eraref"  # eraref (10.11) — в подстройке под эпоху учитываются отказы
 CANDIDATES = 300
 CF_WEIGHT = 0.5            # доля ALS в долгосрочной части (этап 2)
 # Холодный старт (recsys/cold_start.py, 150 пользователей MovieLens, NDCG@10; без данных — 0,048):
@@ -101,6 +101,15 @@ MIN_VOTES = 50_000
 # Берём эпоху 0,5: главный прирост (свежесть W_NEW без неё тянула к годам, которые человеку не нравятся).
 # Язык на MovieLens почти нейтрален; на копии данных сервера при 0,15 у тестировщика, смотрящего только
 # англоязычное, в десятке оставался индийский фильм с накрученным рейтингом IMDb, при 0,3 — уже нет.
+# Отказы в эпохе (10.11): годы отвергнутых («не интересно») вычитаются из годов понравившихся. На живых данных
+# после первого отказа от фильма до 2000 года таких показали ещё 41 (5 человек): 17 отказов, 5 оценок 4–5 —
+# подстройка строилась только по понравившимся и отказы не видела. Проверка на 264 пользователях MovieLens
+# small (отказ — фильм с оценкой ≤ 2), 10 оценок + 3 отказа: близость десятки к годам отвергнутых
+# 0,605 → 0,457 (−0,148 ± 0,024), NDCG@10 0,0378 → 0,0337 (−0,004 ± 0,006, в пределах шума).
+# Проверено и не взято: язык «понравившиеся минус отвергнутые» — он считает доли, отказы от английских фильмов
+# (их показывают больше всего) снимают преимущество английского, и доля фильмов на языках отвергнутых в десятке
+# не упала, а выросла (0 → 0,005–0,023); включать подстройку по одним отказам (без 3 понравившихся) — NDCG при
+# 0 оценок + 3 отказа −0,010 ± 0,006; отказы в доле популярности N0 / (n + N0) — там же −0,004 ± 0,003.
 W_ERA = 0.5
 W_LANG = 0.3
 ERA_BANDWIDTH = 8
@@ -202,19 +211,29 @@ class Recommender:
             return np.zeros(len(self.catalog))
         return np.array([len(g & genres) / len(g) if g else 0.0 for g in self.genre_sets])
 
+    def _year_closeness(self, films: list[str]) -> tuple[np.ndarray, int]:
+        """Сумма близостей года каждого фильма каталога к годам films и число films с известным годом."""
+        years = self.movies.year.to_numpy(float)
+        if not films:
+            return np.zeros(len(years)), 0
+        y = years[self.catalog.positions(films)]
+        # по уникальным годам с их числом, а не по каждому фильму: у импортировавших тысячу оценок
+        # матрица «каталог × понравившиеся» заняла бы сотни мегабайт
+        uniq, counts = np.unique(y[np.isfinite(y)], return_counts=True)
+        kernel = np.exp(-0.5 * ((years[:, None] - uniq[None, :]) / ERA_BANDWIDTH) ** 2)
+        return kernel @ counts, int(counts.sum())
+
     def taste_fit(self, conn, user_id: int) -> tuple[np.ndarray, np.ndarray] | None:
-        """(эпоха, язык) по фильмам с оценкой 4–5; None — понравившихся пока меньше MIN_LIKED_FOR_FIT."""
+        """(эпоха, язык) по фильмам с оценкой 4–5; None — понравившихся пока меньше MIN_LIKED_FOR_FIT.
+        В эпохе годы отвергнутых фильмов вычитаются (см. комментарий у W_ERA)."""
         liked = [t for (t,) in conn.execute("SELECT tconst FROM ratings WHERE user_id = ? AND rating >= 4", (user_id,))
                  if t in self.catalog.index]
         if len(liked) < MIN_LIKED_FOR_FIT:
             return None
         pos = self.catalog.positions(liked)
-        years = self.movies.year.to_numpy(float)
-        # по уникальным годам с их числом, а не по каждому фильму: у импортировавших тысячу оценок
-        # матрица «каталог × понравившиеся» заняла бы сотни мегабайт
-        uniq, counts = np.unique(years[pos][np.isfinite(years[pos])], return_counts=True)
-        kernel = np.exp(-0.5 * ((years[:, None] - uniq[None, :]) / ERA_BANDWIDTH) ** 2)
-        era = kernel @ counts / max(counts.sum(), 1)
+        refused = [t for t in refused_films(conn, user_id) if t in self.catalog.index]
+        (near_liked, n_liked), (near_refused, n_refused) = self._year_closeness(liked), self._year_closeness(refused)
+        era = (near_liked - near_refused) / max(n_liked + n_refused, 1)
         langs = self.movies.language.fillna("")
         share = langs.iloc[pos].value_counts(normalize=True)
         lang = langs.map(share).fillna(0).to_numpy(float)

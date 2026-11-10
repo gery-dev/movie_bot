@@ -10,7 +10,7 @@ from recsys import calibration
 from recsys.explain import explain
 from recsys.favorites import add_favorite, person_unseen, suggest_favorites
 from recsys.profile import (DAY, Profiler, decay, excluded_films, rating_signal, rebuild_profile, record_rating,
-                            record_reaction, load_profile, user_events)
+                            record_reaction, load_profile, refused_films, user_events)
 from recsys.recommender import Recommender
 from recsys.today import (extend_daily, load_daily, load_last, save_daily, summary, today_filter,
                           today_scores)
@@ -329,6 +329,31 @@ def test_taste_fit_follows_liked_years_and_language(conn):
     pos = rec.catalog.index
     assert era[pos["tt03"]] > era[pos["tt07"]]   # 2020 ближе к понравившемуся, чем 1975
     assert lang[pos["tt01"]] == 1.0 and lang[pos["tt07"]] == 0.0  # русского среди понравившегося нет
+
+
+def test_refused_years_push_era_away_but_seen_reason_does_not(conn):
+    rec = Recommender(conn)
+    pos = rec.catalog.index
+    for t in ["tt03", "tt09", "tt01"]:  # понравились 2020, 2023, 2014
+        record_rating(conn, USER, t, 5, "onboarding")
+    before, lang_before = rec.taste_fit(conn, USER)
+    record_reaction(conn, USER, "tt04", "not_interested")  # отказ от фильма 1979 года
+    record_reaction(conn, USER, "tt05", "not_interested")  # отказ, а потом оценка — это уже не отказ
+    record_rating(conn, USER, "tt05", 3)
+    assert refused_films(conn, USER) == {"tt04"}
+    after, lang_after = rec.taste_fit(conn, USER)
+    # фильм 1975 года (рядом с отвергнутым) опустился и относительно 2009-го, и ниже нуля
+    assert after[pos["tt07"]] - after[pos["tt06"]] < before[pos["tt07"]] - before[pos["tt06"]]
+    assert after[pos["tt07"]] < 0
+    assert np.array_equal(lang_after, lang_before)  # язык по отказам не меняется
+    # на «Почему?» ответили «Уже видел»: это не нелюбовь и не отказ по эпохе
+    conn.execute("INSERT INTO recommendations (user_id, tconst, answer, reason) VALUES (?, 'tt04', 'not_interested', 'seen')",
+                 (USER,))
+    assert refused_films(conn, USER) == set()
+    assert {t: s for t, s, _ in user_events(conn, USER)}["tt04"] == 0.0
+    seen_era, _ = rec.taste_fit(conn, USER)
+    liked_only = rec._year_closeness(["tt03", "tt09", "tt01"])[0] / 3
+    assert np.allclose(seen_era, liked_only)
 
 
 def test_als_file_and_only_liked_ratings(conn, tmp_path):

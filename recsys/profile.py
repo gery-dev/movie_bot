@@ -22,7 +22,8 @@ MIN_RATINGS_FOR_MEAN = 5  # дальше нейтральной считаетс
 SIGNALS = {
     "not_seen": -0.1,
     "ignored": -0.1,
-    "not_interested": -1.0,  # как оценка 1: при −0,5 те же жанры («мультфильмы») возвращались снова
+    "not_interested": -1.0,  # как оценка 1: при −0,5 те же жанры («мультфильмы») возвращались снова;
+                             # с причиной «уже видел» (вопрос «Почему?») — как «seen»: это не нелюбовь
     "later": 0.1,
     "seen": 0.0,
     "skip": 0.0,
@@ -158,6 +159,20 @@ def excluded_films(conn, user_id: int) -> set[str]:
     return {r[0] for r in rows}
 
 
+def seen_reason_films(conn, user_id: int) -> set[str]:
+    """Фильмы, где на вопрос «Почему не интересно?» ответили «Уже видел»."""
+    rows = conn.execute("SELECT tconst FROM recommendations WHERE user_id = ? AND reason = 'seen'", (user_id,))
+    return {r[0] for r in rows}
+
+
+def refused_films(conn, user_id: int) -> set[str]:
+    """Отказы как сведения о вкусе: «не интересно» без последующей оценки и без причины «уже видел»."""
+    rows = conn.execute(
+        """SELECT tconst FROM reactions WHERE user_id = :u AND reaction = 'not_interested'
+           EXCEPT SELECT tconst FROM ratings WHERE user_id = :u""", {"u": user_id})
+    return {r[0] for r in rows} - seen_reason_films(conn, user_id)
+
+
 def user_events(conn, user_id: int) -> list[tuple[str, float, float]]:
     """Оценки и реакции пользователя как сигналы. Реакции на фильм, который потом оценён, не учитываются;
     исключение — тональность отзыва: она уточняет оценку."""
@@ -165,13 +180,15 @@ def user_events(conn, user_id: int) -> list[tuple[str, float, float]]:
     center = np.mean([r for _, r, _ in rated]) if len(rated) >= MIN_RATINGS_FOR_MEAN else CENTER
     events = [(t, rating_signal(r, center), _ts(c)) for t, r, c in rated]
     rated_ids = {t for t, _, _ in rated}
+    seen_reason = seen_reason_films(conn, user_id)
     for t, reaction, c, sent in conn.execute(
         "SELECT tconst, reaction, created_at, sentiment FROM reactions WHERE user_id = ?", (user_id,)
     ):
         if reaction == "review" and sent is not None:
             events.append((t, SENTIMENT_WEIGHT * sent, _ts(c)))
         elif t not in rated_ids:
-            events.append((t, SIGNALS[reaction], _ts(c)))
+            kind = "seen" if reaction == "not_interested" and t in seen_reason else reaction
+            events.append((t, SIGNALS[kind], _ts(c)))
     return events
 
 
