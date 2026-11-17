@@ -1,126 +1,152 @@
-# Movie Bot
+# Бот рекомендаций фильмов и сериалов
 
-Telegram-бот для персональных рекомендаций фильмов. Замысел и ТЗ лежат на уровень выше: `../movie_bot_plan.pdf`, `../ТЗ_бот_рекомендаций_фильмов.pdf`.
+Telegram-бот [@movies_selection_bot](https://t.me/movies_selection_bot) подбирает фильмы и сериалы под вкус
+и настроение и к каждому объясняет, почему советует именно его. Учебный проект: от загрузки данных и сравнения
+моделей до бота на сервере и онлайн-теста на живых пользователях.
 
-## Структура
+## Что умеет
 
-| Папка | Что внутри |
-|-------|------------|
-| `bot/` | Бот на aiogram: команды, клавиатуры, состояния диалога |
-| `recsys/` | Модели рекомендаций, профиль пользователя, MMR, объяснения |
-| `data_pipeline/` | Загрузка IMDb и MovieLens, клиенты TMDB и OMDb, ID Кинопоиска из Wikidata, импорт Letterboxd |
-| `db/` | Схема БД и доступ к данным |
-| `notebooks/` | Анализ данных и офлайн-эксперименты |
-| `tests/` | Тесты pytest |
-| `data/` | Сырые (`raw/`) и обработанные (`processed/`) данные, БД — в git не попадает |
+| Команда | Что делает |
+|---|---|
+| `/start` | Знакомство: любимые жанры, фильмы, сериалы, актёры и режиссёры, затем калибровка — 10 фильмов и 3 сериала. Повторный `/start` ничего не сбрасывает |
+| `/recommend` | Подборка фильмов по вкусу |
+| `/today` | Подборка под настроение: настроение, время, компания, новизна, язык, эпоха |
+| `/new` | Новинки последних пяти лет по вкусу |
+| `/series` | Сериалы по вкусу |
+| `/lists` | Списки «видел», «в планах», «скрыто» |
+| `/favorites` | Любимые актёры и режиссёры, их непросмотренные фильмы |
+| `/together` | Кино на компанию: ссылка-приглашение и фильм, который подойдёт всем |
+| `/import` | Перенос оценок из Letterboxd (zip или csv) |
+| `/calibrate` | Пройти знакомство заново, уточнить вкус; оценки сохраняются |
 
-## Запуск окружения
+Обычный текст — поиск: «как „Интерстеллар“, но повеселее», «советская комедия», «фильм про путешествия во
+времени». Поиск фильмов и людей прощает опечатки и понимает русские имена. Каждая подборка листается в одном
+сообщении; у карточки — постер, рейтинг IMDb, описание, где посмотреть, трейлер и ссылка на Кинопоиск.
+Бот ничего не присылает сам — только отвечает на действия.
+
+## Как подбирает
+
+Оценка фильма для пользователя считается в два шага (`recsys/recommender.py`):
+
+1. **Кандидаты** — 300 лучших по долгосрочному вкусу: гибрид ALS (обучена на оценках MovieLens, новый
+   пользователь «встраивается» в неё по своим оценкам) и профиля по признакам фильма (жанры, режиссёр, актёры,
+   десятилетие, страна, язык). Пока оценок мало, подмешивается популярность; фильмам, которых нет в MovieLens,
+   вместо ALS — взвешенный рейтинг IMDb.
+2. **Перестановка** кандидатов с учётом настроения на сегодня, любимых людей и жанров, эпохи и языка
+   понравившихся фильмов и мягкого сдвига к новым. Затем MMR — чтобы в подборке не шли подряд фильмы одной
+   франшизы или одного жанра.
+
+Объяснение «Почему» берётся из признаков с наибольшим вкладом в оценку. Оценённое, скрытое, «не интересно» и
+«в планах» больше не предлагаются; пролистанное без ответа — не раньше чем через 30 дней.
+
+Фильмы и сериалы лежат в одном каталоге (столбец `kind`), но подборки фильмов считаются отдельно, только по
+фильмам: общие нормировки иначе сдвигали бы их выдачу. `/series` — отдельный экземпляр рекомендателя по общему
+каталогу: вкус к сериалам берётся и из оценок фильмов. Все коэффициенты подобраны на пользователях MovieLens,
+цифры — в комментариях кода и в `reports/`.
+
+## Результаты
+
+Офлайн-сравнение на MovieLens: у каждого пользователя последние 20% оценок — в тест, понравившимся считается
+фильм с оценкой от 4, K = 10.
+
+| Модель | NDCG@10, ml-latest-small | NDCG@10, ml-32m |
+|---|---|---|
+| Гибрид ALS + профиль | **0,116** | **0,131** |
+| ALS | 0,091 | 0,119 |
+| Популярность (MovieLens) | 0,080 | 0,073 |
+| SVD | 0,042 | 0,043 |
+
+Подробно: [metrics_ml-latest-small.md](reports/metrics_ml-latest-small.md),
+[metrics_ml-32m.md](reports/metrics_ml-32m.md), холодный старт — [cold_start.md](reports/cold_start.md),
+время ответа — [timing.md](reports/timing.md) (все операции в пределах ТЗ: команды ≤ 3 с, подборки ≤ 10 с,
+импорт ≤ 60 с), сводка испытаний — [testing.md](reports/testing.md), анализ данных — [eda.md](reports/eda.md).
+
+## Запуск
+
+Нужен Python 3.13.
 
 ```bash
 python3.13 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # и вписать ключи
+cp .env.example .env    # вписать TELEGRAM_BOT_TOKEN и TMDB_API_KEY (OMDB_API_KEY не используется)
 ```
 
-## Данные
-
-Каталог — фильмы и сериалы (столбец `kind`). Подборки фильмов считаются только по фильмам, `/series` — отдельным рекомендателем по общему каталогу (вкус берётся и из оценок фильмов).
+Данные в репозиторий не входят — их нужно собрать (по порядку, ~40 минут):
 
 ```bash
-python -m data_pipeline.imdb download              # датасеты IMDb в data/raw/ (~1,9 ГБ)
-python -m data_pipeline.imdb load --min-votes 5000 # фильмы и сериалы (kind), люди, жанры в data/movies.db
-python -m data_pipeline.movielens download ml-latest-small  # оценки для опытов (1 МБ)
-python -m data_pipeline.movielens download ml-32m           # оценки для итоговых замеров (239 МБ)
-python -m data_pipeline.movielens link ml-latest-small      # сколько фильмов и оценок связалось с IMDb
-python -m data_pipeline.tmdb enrich                         # страна, язык, описание, постер, у сериалов сезоны (~15 мин)
-python -m data_pipeline.kinopoisk                          # ID Кинопоиска из Wikidata для прямых ссылок (~1 мин)
-python -m data_pipeline.people_ru                          # русские имена людей из Wikidata для поиска (~4 мин)
+python -m data_pipeline.imdb download                    # выгрузки IMDb в data/raw/ (~1,9 ГБ)
+python -m data_pipeline.imdb load --min-votes 5000       # фильмы и сериалы, люди, жанры → data/movies.db
+python -m data_pipeline.tmdb enrich                      # описание, постер, страна, язык, сезоны (~15 мин)
+python -m data_pipeline.kinopoisk                        # ID Кинопоиска из Wikidata (~1 мин)
+python -m data_pipeline.people_ru                        # русские имена людей из Wikidata (~4 мин)
+python -m data_pipeline.movielens download ml-latest-small
+python -m data_pipeline.movielens download ml-32m        # 239 МБ
+python -m recsys.features embeddings                     # эмбеддинги описаний (~5 мин)
+python -m recsys.train_als                               # векторы ALS → data/processed/als_ml-32m.npz
 ```
 
-Ответы TMDB кэшируются в таблице `api_cache`: повторный запуск не обращается к API.
+Ответы TMDB кэшируются в таблице `api_cache`, повторный запуск в API не ходит. Если в каталог добавились
+новые записи, эмбеддинги можно досчитать только для них: `python -m recsys.features embeddings --missing`.
 
-Анализ данных: `python notebooks/eda.py` строит графики в `reports/figures/`, выводы — в [reports/eda.md](reports/eda.md).
-
-## Модели
+Запуск бота:
 
 ```bash
-python -m recsys.features embeddings     # эмбеддинги описаний всего каталога (один раз, ~5 мин)
-python -m recsys.features embeddings --missing  # досчитать только новые записи (например, сериалы)
-python -m recsys.evaluate ml-latest-small # сравнение моделей на MovieLens
-pytest                                   # тесты метрик и разбиения
+python -m bot           # логи — logs/bot.log, без текста сообщений и ключей
 ```
 
-Результаты: [reports/metrics_ml-latest-small.md](reports/metrics_ml-latest-small.md).
+Один токен — один работающий бот: если бот уже запущен на сервере, локально его не запускать.
 
-## Профиль пользователя
-
-| Модуль | Что делает |
-|--------|------------|
-| `recsys/profile.py` | Профиль — веса признаков по оценкам и реакциям, затухание старых оценок, списки «видел / в планах / скрыто» |
-| `recsys/today.py` | Опрос «на сегодня»: длительность и язык — фильтры, настроение, компания, новизна, эпоха — приоритеты |
-| `recsys/favorites.py` | Любимые актёры и режиссёры: поиск, автопредложение, непросмотренные фильмы человека |
-| `recsys/calibration.py` | Подбор 10 разнообразных фильмов для калибровки вкуса |
-| `recsys/recommender.py` | Итоговая выдача: кандидаты по долгосрочному профилю и любимым, перестановка с учётом «сегодня» |
+## Проверки
 
 ```bash
-python -m recsys.tune   # подбор параметров профиля на пользователях MovieLens
+pytest                                       # юнит-тесты
+python -m recsys.evaluate ml-latest-small    # офлайн-сравнение моделей
+python -m recsys.evaluate ml-32m --sample-users 20000 --eval-users 3000
+python -m recsys.cold_start                  # качество для новых пользователей
+python -m recsys.tune                        # подбор параметров профиля
+python -m bot.benchmark                      # время ответа → reports/timing.md
+python -m recsys.online_stats --exclude <ВАШ_ID>   # сводка онлайн-теста без своих аккаунтов
 ```
 
-Результаты: [reports/profile_tuning.md](reports/profile_tuning.md).
+## Развёртывание
 
-## Бот
+Сервер — Ubuntu или Debian с sudo. Команды запускаются на своём компьютере из папки проекта:
 
 ```bash
-python -m bot   # нужны TELEGRAM_BOT_TOKEN и TMDB_API_KEY в .env и загруженные данные (см. выше)
+SSH_KEY=~/.ssh/ключ ./deploy/deploy.sh user@host --first   # первый раз: код, БД без пользователей, модели, .env
+SSH_KEY=~/.ssh/ключ ./deploy/deploy.sh user@host           # обновление кода; данные на сервере не трогаются
 ```
 
-Команды: `/start` — знакомство (у знакомого пользователя ничего не сбрасывает), `/recommend` — подборка по вкусу,
-`/today` — подборка под настроение, `/lists`, `/favorites`, `/together` — кино на компанию,
-`/import` — оценки из Letterboxd, `/calibrate` — уточнить вкус (ещё 10 фильмов и любимые), `/help`. Обычный текст («как „Интерстеллар“,
-но повеселее») — поиск фильмов.
-
-| Модуль | Что делает |
-|--------|------------|
-| `recsys/explain.py` | Объяснение «Почему: тебе нравятся … и …» |
-| `recsys/recommender.py` | Выдача, разнообразие (MMR), поиск текстом, подборка для компании |
-| `recsys/query.py` | Разбор запроса: фильм-образец, пожелания, фильтры |
-| `recsys/sentiment.py` | Тональность отзыва (модель seara/rubert-tiny2-russian-sentiment) |
-| `data_pipeline/letterboxd.py` | Импорт выгрузки Letterboxd |
-Подборки листаются в одном сообщении; логи — в `logs/bot.log` (без текстов сообщений и ключей).
-
-Бот ничего не присылает сам — только отвечает на действия. Фильм из подборки без ответа через
-`FEEDBACK_IGNORE_AFTER_MIN` минут (по умолчанию неделя, задаётся в `.env`) считается «проигнорированным».
-
-## Развёртывание на сервер
-
-Ubuntu/Debian с sudo. С Mac, из папки проекта (перед первым разом остановить бота на Mac — один токен, один бот):
+На сервере бот работает службой `movie-bot` (перезапускается при сбое), библиотеки — из `requirements-bot.txt`.
+Копия базы делается каждый день в 04:00 (таймер `movie-bot-backup`), хранятся 14 последних.
 
 ```bash
-SSH_KEY=~/.ssh/ключ ./deploy/deploy.sh user@host --first   # первый раз: код, БД без пользователей, эмбеддинги, .env
-SSH_KEY=~/.ssh/ключ ./deploy/deploy.sh user@host           # обновление кода, данные на сервере не трогаются
+sudo systemctl status movie-bot                          # состояние
+journalctl -u movie-bot -f                               # журнал
+python -m db.backup                                      # копия вручную, с проверкой целостности
+python -m db.backup --restore data/backups/<файл>.db.gz  # восстановление (бот остановлен)
 ```
 
-На сервере бот работает службой `movie-bot` (перезапуск при сбое), копия БД — таймер `movie-bot-backup`
-каждый день в 04:00, хранятся 14 последних (`data/backups/`). Библиотеки для сервера — `requirements-bot.txt`.
+## Структура
 
-```bash
-sudo systemctl status movie-bot                 # состояние
-journalctl -u movie-bot -f                      # журнал
-python -m db.backup                             # копия вручную (с проверкой)
-python -m db.backup --restore data/backups/<файл>.db.gz   # восстановление, бот остановлен
-```
+| Папка | Что внутри |
+|---|---|
+| `bot/` | Бот на aiogram 3: обработчики команд, карточки, клавиатуры, журнал действий |
+| `recsys/` | Рекомендатель, профиль, опрос на сегодня, калибровка, поиск, объяснения, офлайн-оценка |
+| `data_pipeline/` | Загрузка IMDb и MovieLens, клиент TMDB, Wikidata (Кинопоиск, русские имена), импорт Letterboxd |
+| `db/` | Схема SQLite, миграции, резервные копии |
+| `deploy/` | Скрипты выкатки и службы systemd |
+| `reports/` | Отчёты по этапам — только сводные числа |
+| `notebooks/` | Анализ данных (`eda.py`) |
+| `tests/` | Тесты pytest |
 
-## Тестирование
+## Данные и приватность
 
-```bash
-pytest                                   # юнит-тесты
-python -m bot.benchmark                  # время ответа (ТЗ п. 4.3) → reports/timing.md
-python -m recsys.cold_start              # холодный старт → reports/cold_start.md
-python -m recsys.evaluate ml-32m --sample-users 20000 --eval-users 3000   # большой MovieLens
-python -m recsys.online_stats --exclude <свои ID>                         # онлайн-тест → reports/online_test.md
-```
+Источники: [IMDb Non-Commercial Datasets](https://developer.imdb.com/non-commercial-datasets/) (только
+некоммерческое использование), [TMDB](https://www.themoviedb.org) (описания, постеры, трейлеры; «This product
+uses the TMDB API but is not endorsed or certified by TMDB»), [MovieLens](https://grouplens.org/datasets/movielens/),
+[Wikidata](https://www.wikidata.org) (CC0). Сами данные в репозиторий не входят.
 
-Сводка: [reports/testing.md](reports/testing.md).
-
-Данные IMDb и MovieLens используются только в некоммерческих целях и в репозиторий не попадают.
+Бот хранит оценки, ответы на карточки и нажатия кнопок, но не текст сообщений и не имена. База, логи, ключи и
+выгрузки пользователей в репозиторий не попадают.

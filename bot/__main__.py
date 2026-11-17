@@ -27,7 +27,7 @@ COMMANDS = [
     BotCommand(command="favorites", description="Любимые актёры и режиссёры"),
     BotCommand(command="together", description="Кино на компанию"),
     BotCommand(command="import", description="Перенести оценки из Letterboxd"),
-    BotCommand(command="calibrate", description="Уточнить вкус: ещё 10 фильмов"),
+    BotCommand(command="calibrate", description="Уточнить вкус: 10 фильмов и 3 сериала"),
     BotCommand(command="help", description="Справка"),
 ]
 
