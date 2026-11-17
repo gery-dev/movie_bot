@@ -125,3 +125,66 @@ def test_unreadable_file_raises_export_error(tmp_path, raw, reason):
         asyncio.run(import_export(conn, 7, path, MOVIES))
     assert e.value.reason == reason
     conn.close()
+
+
+def test_zip_bomb_is_rejected_without_unpacking(tmp_path, monkeypatch):
+    """Сжатый в архиве csv в сотни раз больше архива: распаковывать его целиком нельзя (память сервера)."""
+    import data_pipeline.letterboxd as lb
+    monkeypatch.setattr(lb, "MAX_FILE_BYTES", 1_000_000)
+    zpath = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("ratings.csv", "Date,Name,Year,Letterboxd URI,Rating\n" + "0" * 5_000_000)
+    assert zpath.stat().st_size < 20_000  # архив маленький, внутри — 5 МБ
+    read = []
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", lambda self, n=-1, _r=zipfile.ZipExtFile.read: read.append(n) or _r(self, n))
+    with pytest.raises(ExportError) as e:
+        asyncio.run(import_export(_db(tmp_path), 7, zpath, MOVIES))
+    assert e.value.reason == "too_big"
+    assert all(0 <= n <= 1_000_001 for n in read)  # целиком не читали
+
+
+def test_too_many_entries_or_rows_rejected(tmp_path, monkeypatch):
+    import data_pipeline.letterboxd as lb
+    monkeypatch.setattr(lb, "MAX_ROWS", 3)
+    path = tmp_path / "ratings.csv"
+    path.write_text("Date,Name,Year,Letterboxd URI,Rating\n" + "2024-01-01,Film,2001,x,4\n" * 4)
+    conn = _db(tmp_path)
+    with pytest.raises(ExportError) as e:
+        asyncio.run(import_export(conn, 7, path, MOVIES))
+    assert e.value.reason == "too_big"
+    zpath = tmp_path / "many.zip"
+    monkeypatch.setattr(lb, "MAX_ZIP_ENTRIES", 5)
+    with zipfile.ZipFile(zpath, "w") as z:
+        for i in range(6):
+            z.writestr(f"f{i}.txt", "x")
+    with pytest.raises(ExportError) as e:
+        asyncio.run(import_export(conn, 7, zpath, MOVIES))
+    assert e.value.reason == "too_big"
+
+
+def test_tmdb_lookups_are_capped(tmp_path, monkeypatch):
+    import data_pipeline.letterboxd as lb
+    monkeypatch.setattr(lb, "MAX_TMDB_LOOKUPS", 2)
+    path = tmp_path / "ratings.csv"
+    path.write_text("Date,Name,Year,Letterboxd URI,Rating\n" + "".join(f"2024-01-01,Fake {i},2001,x,4\n" for i in range(5)))
+    calls = []
+
+    class FakeTMDB:
+        async def get(self, path, **params):
+            calls.append(params["query"])
+            return {"results": []}
+    res = asyncio.run(import_export(_db(tmp_path), 7, path, MOVIES, FakeTMDB()))
+    assert len(calls) == 2 and len(res.unmatched) == 5
+
+
+def test_forged_size_in_zip_header_is_bad_zip(tmp_path):
+    import struct
+    zpath = tmp_path / "fake.zip"
+    body = "Date,Name,Year,Letterboxd URI,Rating\n" + "0" * 100_000
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("ratings.csv", body)
+    data = zpath.read_bytes().replace(struct.pack("<I", len(body)), struct.pack("<I", 1000))  # заголовок врёт
+    zpath.write_bytes(data)
+    with pytest.raises(ExportError) as e:
+        asyncio.run(import_export(_db(tmp_path), 7, zpath, MOVIES))
+    assert e.value.reason == "bad_zip"

@@ -32,6 +32,8 @@ PROBLEMS = {
     "encoding": "Не смог определить кодировку.",
     "no_name_column": "В нём нет столбца Name — это не файл из выгрузки Letterboxd.",
     "no_known_files": "В архиве нет ratings.csv, watched.csv и watchlist.csv.",
+    "bad_zip": "Архив повреждён или защищён паролем.",
+    "too_big": "Файл слишком большой для выгрузки Letterboxd: больше 10 МБ, 1000 файлов в архиве или 20 000 фильмов.",
 }
 NEED_FILES = (
     "Нужна выгрузка Letterboxd: весь zip-архив или один из файлов ratings.csv (оценки), watched.csv (просмотренное), "

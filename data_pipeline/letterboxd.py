@@ -22,6 +22,12 @@ import pandas as pd
 from recsys.profile import ensure_user, record_rating, set_list
 
 FILES = {"ratings.csv": "ratings", "watched.csv": "watched", "watchlist.csv": "watchlist"}
+# Защита от архивов-бомб и огромных файлов (на сервере 1,6 ГБ памяти, а распаковка целиком в память раньше
+# могла занять гигабайты): настоящая выгрузка на 10 тыс. фильмов — около 1 МБ и пара десятков файлов.
+MAX_FILE_BYTES = 10 * 1024 * 1024   # распакованный csv; проверяется и по заголовку zip, и при чтении
+MAX_ZIP_ENTRIES = 1000              # файлов в архиве
+MAX_ROWS = 20_000                   # строк во всех файлах вместе
+MAX_TMDB_LOOKUPS = 300              # не найденных в БД ищем через TMDB не больше стольких
 
 
 @dataclass
@@ -43,7 +49,8 @@ class ImportResult:
 
 
 class ExportError(Exception):
-    """Файл не разобрать как csv. reason — короткий код для лога и ответа бота: empty | not_csv | encoding."""
+    """Файл не разобрать как csv. reason — короткий код для лога и ответа бота:
+    empty | not_csv | encoding | bad_zip | too_big (превышены лимиты размера, файлов или строк)."""
 
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -74,15 +81,42 @@ def read_export(path: Path) -> dict[str, pd.DataFrame]:
     if zipfile.is_zipfile(path):
         out = {}
         with zipfile.ZipFile(path) as z:
-            for name in z.namelist():
-                base = name.rsplit("/", 1)[-1].lower()
+            infos = z.infolist()
+            if len(infos) > MAX_ZIP_ENTRIES:
+                raise ExportError("too_big")
+            for info in infos:
+                base = info.filename.rsplit("/", 1)[-1].lower()
                 # в выгрузке есть и папки (например, deleted/ratings.csv) — берём только верхний уровень
-                if base in FILES and "/" not in name.strip("/"):
-                    out[FILES[base]] = read_csv_bytes(z.read(name))
-        return out
+                if base in FILES and "/" not in info.filename.strip("/"):
+                    out[FILES[base]] = read_csv_bytes(_read_limited(z, info))
+        return _check_rows(out)
+    if path.stat().st_size > MAX_FILE_BYTES:
+        raise ExportError("too_big")
     df = read_csv_bytes(path.read_bytes())
     kind = FILES.get(path.name.lower()) or ("ratings" if "Rating" in df.columns else "watched")
-    return {kind: df}
+    return _check_rows({kind: df})
+
+
+def _read_limited(z: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    """Читает файл из архива, но не больше MAX_FILE_BYTES. Размер в заголовке можно подделать,
+    поэтому кроме него ограничено и само чтение."""
+    if info.file_size > MAX_FILE_BYTES:
+        raise ExportError("too_big")
+    try:
+        with z.open(info) as f:
+            raw = f.read(MAX_FILE_BYTES + 1)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, RuntimeError):
+        # повреждённый архив, подделанный размер (не сходится контрольная сумма), шифрование
+        raise ExportError("bad_zip") from None
+    if len(raw) > MAX_FILE_BYTES:
+        raise ExportError("too_big")
+    return raw
+
+
+def _check_rows(data: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    if sum(len(df) for df in data.values()) > MAX_ROWS:
+        raise ExportError("too_big")
+    return data
 
 
 def normalize(title: str) -> str:
@@ -129,7 +163,8 @@ async def tmdb_find(tmdb, matcher: Matcher, name: str, year) -> str | None:
 
 async def import_export(conn, user_id: int, path: Path, movies: pd.DataFrame, tmdb=None) -> ImportResult:
     t0 = time.time()
-    data = read_export(path)
+    # распаковка и разбор csv — в отдельном потоке: иначе на это время бот не отвечает никому
+    data = await asyncio.to_thread(read_export, path)
     matcher = Matcher(movies)
     res = ImportResult()
     items = []  # (вид, название, год, оценка)
@@ -150,8 +185,9 @@ async def import_export(conn, user_id: int, path: Path, movies: pd.DataFrame, tm
     found = {(n, y): matcher.find(n, y) for _, n, y, _ in items}
     missing = [k for k, v in found.items() if v is None]
     if tmdb is not None and missing:
-        results = await asyncio.gather(*(tmdb_find(tmdb, matcher, n, y) for n, y in missing))
-        found.update(dict(zip(missing, results)))
+        lookup = missing[:MAX_TMDB_LOOKUPS]  # остальные останутся среди ненайденных
+        results = await asyncio.gather(*(tmdb_find(tmdb, matcher, n, y) for n, y in lookup))
+        found.update(dict(zip(lookup, results)))
 
     ensure_user(conn, user_id)
     rated_before = {r[0] for r in conn.execute("SELECT tconst FROM ratings WHERE user_id = ?", (user_id,))}
