@@ -145,7 +145,7 @@ def main() -> None:
     train, test = load_split(DATASET)
     fit_part, valid = temporal_split(train)
     with connect() as conn:
-        known = {r[0] for r in conn.execute("SELECT tconst FROM movies")}
+        known = {r[0] for r in conn.execute("SELECT tconst FROM movies WHERE kind = 'movie'")}
     catalog = Catalog(sorted(set(load_links(DATASET).tconst) & known))
     profiler = Profiler(catalog.ids)
     lines = []

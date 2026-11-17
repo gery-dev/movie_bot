@@ -25,13 +25,15 @@ cp .env.example .env   # и вписать ключи
 
 ## Данные
 
+Каталог — фильмы и сериалы (столбец `kind`). Подборки фильмов считаются только по фильмам, `/series` — отдельным рекомендателем по общему каталогу (вкус берётся и из оценок фильмов).
+
 ```bash
 python -m data_pipeline.imdb download              # датасеты IMDb в data/raw/ (~1,9 ГБ)
-python -m data_pipeline.imdb load --min-votes 5000 # фильмы, люди, жанры в data/movies.db
+python -m data_pipeline.imdb load --min-votes 5000 # фильмы и сериалы (kind), люди, жанры в data/movies.db
 python -m data_pipeline.movielens download ml-latest-small  # оценки для опытов (1 МБ)
 python -m data_pipeline.movielens download ml-32m           # оценки для итоговых замеров (239 МБ)
 python -m data_pipeline.movielens link ml-latest-small      # сколько фильмов и оценок связалось с IMDb
-python -m data_pipeline.tmdb enrich                         # страна, язык, описание, постер из TMDB (~15 мин)
+python -m data_pipeline.tmdb enrich                         # страна, язык, описание, постер, у сериалов сезоны (~15 мин)
 python -m data_pipeline.kinopoisk                          # ID Кинопоиска из Wikidata для прямых ссылок (~1 мин)
 python -m data_pipeline.people_ru                          # русские имена людей из Wikidata для поиска (~4 мин)
 ```
@@ -43,7 +45,8 @@ python -m data_pipeline.people_ru                          # русские им
 ## Модели
 
 ```bash
-python -m recsys.features embeddings     # эмбеддинги описаний всех фильмов (один раз, ~5 мин)
+python -m recsys.features embeddings     # эмбеддинги описаний всего каталога (один раз, ~5 мин)
+python -m recsys.features embeddings --missing  # досчитать только новые записи (например, сериалы)
 python -m recsys.evaluate ml-latest-small # сравнение моделей на MovieLens
 pytest                                   # тесты метрик и разбиения
 ```

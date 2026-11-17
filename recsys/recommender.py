@@ -152,11 +152,16 @@ def rerank(base: np.ndarray, today: np.ndarray, b: float, fav: np.ndarray, c: fl
 
 
 class Recommender:
-    def __init__(self, conn, als=None):
-        """als — recsys.models.ALS на каталоге всех фильмов БД, обученная или из файла (необязательно)."""
+    def __init__(self, conn, als=None, kinds: tuple[str, ...] = ("movie",)):
+        """als — recsys.models.ALS на том же каталоге, обученная или из файла (необязательно).
+        kinds — что входит в каталог. Фильмы считаются отдельно от сериалов: общие нормировки и веса
+        TF-IDF по каталогу с сериалами сдвигали подборки фильмов (на данных сервера менялась бо́льшая часть
+        десяток). Для /series — каталог ("movie", "series"): вкус берётся и из оценок фильмов."""
+        self.kinds = kinds
         self.movies = pd.read_sql(
-            "SELECT tconst, title, title_ru, year, runtime, genres, language, rating, votes FROM movies ORDER BY tconst",
-            conn,
+            f"""SELECT tconst, title, title_ru, year, runtime, genres, language, rating, votes, kind, end_year FROM movies
+                WHERE kind IN ({",".join("?" * len(kinds))}) ORDER BY tconst""",
+            conn, params=list(kinds),
         )
         self.catalog = Catalog(self.movies.tconst.tolist())
         self.profiler = Profiler(self.catalog.ids, conn=conn)
@@ -164,6 +169,7 @@ class Recommender:
         v, r = self.movies.votes.to_numpy(float), self.movies.rating.to_numpy(float)
         self.popularity = (v * r + POPULARITY_MIN_VOTES * r.mean()) / (v + POPULARITY_MIN_VOTES)
         people = pd.read_sql("SELECT tconst, nconst FROM movie_people", conn)
+        people = people[people.tconst.isin(self.catalog.index)]
         self.people = people.assign(pos=self.catalog.positions(people.tconst))
         self.names = dict(conn.execute("SELECT nconst, coalesce(name_ru, name) FROM people").fetchall())
         genres = self.movies.genres.fillna("").str.split(",").map(lambda g: [x for x in g if x])
@@ -277,10 +283,10 @@ class Recommender:
         return cand[chosen]
 
     def recommend(self, conn, user_id: int, k: int = 5, answers: dict | None = None,
-                  diverse: bool = True, min_year: int | None = None) -> pd.DataFrame:
+                  diverse: bool = True, min_year: int | None = None, kind: str = "movie") -> pd.DataFrame:
         """Топ-k фильмов с объяснением. answers — опрос на сегодня (/today); без него — обычная
         подборка по вкусу (/recommend). min_year — только фильмы не старше этого года (/new).
-        diverse=False — без MMR (для сравнения)."""
+        kind — movie (фильмы) или series (/series). diverse=False — без MMR (для сравнения)."""
         answers = answers or {}
         genres = load_genres(conn, user_id)
         parts = self.long_term_parts(conn, user_id)
@@ -289,7 +295,7 @@ class Recommender:
         fav_people = favorite_people(conn, user_id)
         fav = self.favorites_bonus(conn, user_id, fav_people)
 
-        ok = np.ones(len(self.catalog), bool)
+        ok = (self.movies.kind.fillna("movie") == kind).to_numpy(copy=True)
         if answers:
             ok &= today_filter(self.movies, answers)
         if min_year:

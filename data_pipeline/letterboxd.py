@@ -130,6 +130,8 @@ def letterboxd_rating(r: float) -> int:
 
 class Matcher:
     def __init__(self, movies: pd.DataFrame):
+        if "kind" in movies.columns:  # Letterboxd — про фильмы: сериал с тем же названием не подставляем
+            movies = movies[movies["kind"].fillna("movie") == "movie"]
         m = movies[["tconst", "title", "original_title", "year", "votes", "tmdb_id"]].copy()
         rows = []
         for col in ["title", "original_title"]:

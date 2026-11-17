@@ -104,4 +104,4 @@ async def not_a_file(message: Message) -> None:
 
 def _extra(app: App):
     """Колонки, которых нет в данных рекомендателя, но нужны для сопоставления."""
-    return pd.read_sql("SELECT tconst, original_title, tmdb_id FROM movies", app.conn)
+    return pd.read_sql("SELECT tconst, original_title, tmdb_id, kind FROM movies", app.conn)

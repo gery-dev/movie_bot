@@ -18,7 +18,11 @@ CREATE TABLE IF NOT EXISTS movies (
     language        TEXT,
     overview_ru     TEXT,
     poster_path     TEXT,
-    kp_id           INTEGER                -- ID Кинопоиска (из Wikidata)
+    kp_id           INTEGER,               -- ID Кинопоиска (из Wikidata)
+    kind            TEXT NOT NULL DEFAULT 'movie',  -- movie | series (tvSeries и tvMiniSeries IMDb)
+    end_year        INTEGER,               -- у сериала: год окончания (пусто — ещё идёт)
+    seasons         INTEGER,               -- у сериала: число сезонов (из TMDB)
+    episode_runtime INTEGER                -- у сериала: длина серии, минуты
 );
 CREATE INDEX IF NOT EXISTS idx_movies_year ON movies(year);
 CREATE INDEX IF NOT EXISTS idx_movies_votes ON movies(votes);

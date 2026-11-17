@@ -1,6 +1,7 @@
 """Признаки фильмов для контентной модели.
 
-    python -m recsys.features embeddings  # посчитать эмбеддинги описаний всех фильмов (один раз)
+    python -m recsys.features embeddings            # эмбеддинги описаний всего каталога (один раз)
+    python -m recsys.features embeddings --missing  # досчитать только новые записи (сериалы и т. п.)
 
 Мета-признаки (жанры, режиссёры, актёры, десятилетие, страна, язык) собираются из БД за секунды.
 Эмбеддинги описаний — векторы смысла текста от sentence-transformers — считаются долго,
@@ -72,11 +73,11 @@ def meta_features(tconsts: list[str], with_names: bool = False, conn=None):
 
 async def _texts() -> pd.DataFrame:
     conn = connect()
-    movies = pd.read_sql("SELECT tconst, tmdb_id, title, title_ru, overview_ru FROM movies", conn)
+    movies = pd.read_sql("SELECT tconst, tmdb_id, kind, title, title_ru, overview_ru FROM movies", conn)
     missing = movies[movies.overview_ru.isna() & movies.tmdb_id.notna()]
     tmdb = TMDB(conn)
     try:
-        en = await asyncio.gather(*(tmdb.overview_en(int(i)) for i in missing.tmdb_id))
+        en = await asyncio.gather(*(tmdb.overview_en(int(i), k) for i, k in zip(missing.tmdb_id, missing.kind)))
     finally:
         conn.commit()
         await tmdb.close()
@@ -90,16 +91,27 @@ async def _texts() -> pd.DataFrame:
     return movies[["tconst", "text"]]
 
 
-def build_embeddings() -> None:
+def build_embeddings(only_missing: bool = False) -> None:
+    """only_missing — досчитать только записи, которых нет в файле (например, добавленные сериалы):
+    векторы остальных остаются прежними байт в байт."""
     from sentence_transformers import SentenceTransformer
 
     texts = asyncio.run(_texts())
+    old_ids, old_emb = [], None
+    if only_missing and EMB_PATH.exists():
+        old_ids = EMB_IDS_PATH.read_text(encoding="utf-8").split("\n")
+        old_emb = np.load(EMB_PATH)
+        texts = texts[~texts.tconst.isin(set(old_ids))]
     model = SentenceTransformer(EMB_MODEL)
     emb = model.encode(texts.text.tolist(), batch_size=64, show_progress_bar=True, normalize_embeddings=True)
+    emb = emb.astype(np.float32)
+    if old_emb is not None:
+        emb = np.vstack([old_emb, emb])
+    ids = old_ids + texts.tconst.tolist()
     PROCESSED.mkdir(parents=True, exist_ok=True)
-    np.save(EMB_PATH, emb.astype(np.float32))
-    EMB_IDS_PATH.write_text("\n".join(texts.tconst), encoding="utf-8")
-    print(f"Сохранено {emb.shape[0]} векторов размерности {emb.shape[1]} в {EMB_PATH.relative_to(ROOT)}")
+    np.save(EMB_PATH, emb)
+    EMB_IDS_PATH.write_text("\n".join(ids), encoding="utf-8")
+    print(f"Сохранено {emb.shape[0]} векторов (новых {len(texts)}) размерности {emb.shape[1]} в {EMB_PATH.relative_to(ROOT)}")
 
 
 def load_embeddings(tconsts: list[str]) -> np.ndarray:
@@ -119,5 +131,6 @@ def load_embeddings(tconsts: list[str]) -> np.ndarray:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["embeddings"])
-    parser.parse_args()
-    build_embeddings()
+    parser.add_argument("--missing", action="store_true", help="досчитать только новые записи каталога")
+    args = parser.parse_args()
+    build_embeddings(only_missing=args.missing)

@@ -22,6 +22,7 @@ COMMANDS = [
     BotCommand(command="recommend", description="Подборка по вкусу"),
     BotCommand(command="today", description="Подборка под настроение"),
     BotCommand(command="new", description="Новинки последних лет по вкусу"),
+    BotCommand(command="series", description="Сериалы по вкусу"),
     BotCommand(command="lists", description="Видел / в планах / скрыто"),
     BotCommand(command="favorites", description="Любимые актёры и режиссёры"),
     BotCommand(command="together", description="Кино на компанию"),

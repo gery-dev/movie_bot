@@ -437,3 +437,14 @@ def test_answered_reason_is_saved_and_not_deleted_later(tmp_path):
     asyncio.run(recommend.reason_answer(callback(1, 56), ReasonCb(t="tt01", r="нет-такой"), app))  # чужой код игнорируется
     assert app.conn.execute("SELECT reason FROM recommendations").fetchone()[0] == "kind"
     assert app.reason_msgs == {}  # отвеченный вопрос из списка «ждут ответа» убран
+
+
+def test_series_card_shows_years_seasons_and_episode():
+    from bot.services import years_label
+    show = {"title": "Breaking Bad", "title_ru": "Во все тяжкие", "year": 2008, "end_year": 2013, "kind": "series",
+            "seasons": 5, "episode_runtime": 48, "rating": 9.5, "genres": "Crime,Drama", "runtime": None}
+    text = card_text(show, ["A", "B", "C"], [], [])
+    assert "<b>Во все тяжкие</b> (2008–2013)" in text and "5 сезонов" in text and "серия ~48 мин" in text
+    assert "Режиссёры: A, B" in text and "C" not in text.split("Режиссёры: ")[1].split("\n")[0]
+    assert years_label(2019, None, "series") == " (2019–…)" and years_label(2016, 2016, "series") == " (2016)"
+    assert years_label(2010, None, "movie") == " (2010)"

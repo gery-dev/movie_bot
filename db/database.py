@@ -26,7 +26,10 @@ NEW_COLUMNS = [("recommendations", "mode", "TEXT"),  # recommend | today | query
                ("recommendations", "position", "INTEGER"), ("recommendations", "n_ratings", "INTEGER"),
                ("recommendations", "model_version", "TEXT"), ("recommendations", "mood", "TEXT"),
                ("recommendations", "reason", "TEXT"),  # почему «не интересно»
-               ("events", "matched", "INTEGER")]
+               ("events", "matched", "INTEGER"),
+               # сериалы: тип записи каталога и поля, которых у фильма нет
+               ("movies", "kind", "TEXT NOT NULL DEFAULT 'movie'"), ("movies", "end_year", "INTEGER"),
+               ("movies", "seasons", "INTEGER"), ("movies", "episode_runtime", "INTEGER")]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

@@ -1,4 +1,5 @@
-"""Знакомство (/start): жанры → любимые фильмы → любимые люди → калибровка на 10 фильмах.
+"""Знакомство (/start): жанры → любимые фильмы → любимые сериалы → любимые люди → калибровка
+(10 фильмов, затем 3 сериала).
 На каждом шаге можно вернуться назад; калибровка идёт в одном сообщении, «← Назад» отменяет
 последний ответ."""
 import numpy as np
@@ -21,8 +22,9 @@ from recsys.profile import ensure_user, excluded_films, save_genres
 
 router = Router()
 NOT_COMMAND = ~F.text.startswith("/")
-FILMS_NAV = (("Следующий этап: актёры и режиссёры →", "films_done"), ("← Назад к жанрам", "back_genres"))
-PEOPLE_NAV = (("Следующий этап: калибровка →", "people_done"), ("← Назад к фильмам", "back_films"))
+FILMS_NAV = (("Следующий этап: сериалы →", "films_done"), ("← Назад к жанрам", "back_genres"))
+SERIES_NAV = (("Следующий этап: актёры и режиссёры →", "series_done"), ("← Назад к фильмам", "back_films"))
+PEOPLE_NAV = (("Следующий этап: калибровка →", "people_done"), ("← Назад к сериалам", "back_series"))
 
 
 @router.message(CommandStart())
@@ -128,13 +130,13 @@ async def pick_film(callback: CallbackQuery, callback_data: PickCb, app: App) ->
 
 @router.callback_query(Onboarding.films, NavCb.filter(F.a == "films_done"))
 async def films_done(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(Onboarding.people)
+    await state.set_state(Onboarding.series)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(texts.ASK_PEOPLE, reply_markup=nav_kb(*PEOPLE_NAV))
+    await callback.message.answer(texts.ASK_SERIES, reply_markup=nav_kb(*SERIES_NAV))
     await callback.answer()
 
 
-@router.callback_query(Onboarding.people, NavCb.filter(F.a == "back_films"))
+@router.callback_query(Onboarding.series, NavCb.filter(F.a == "back_films"))
 async def back_to_films(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(Onboarding.films)
     await callback.message.edit_reply_markup(reply_markup=None)
@@ -142,7 +144,53 @@ async def back_to_films(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-# --- шаг 3: любимые люди ---
+# --- шаг 3: любимые сериалы (можно пропустить) ---
+
+@router.message(Onboarding.series, F.text, NOT_COMMAND)
+async def search_series(message: Message, app: App) -> None:
+    found = app.search_series(message.text)
+    app.log_search(message.from_user.id, "series", message.text, len(found))
+    if not found:
+        await message.answer("Не нашёл такой сериал. Попробуй иначе — можно по-английски.",
+                             reply_markup=nav_kb(*SERIES_NAV))
+        return
+    kb = InlineKeyboardBuilder()
+    for tconst, label in found:
+        kb.button(text=label, callback_data=PickCb(t=tconst))
+    for text, action in SERIES_NAV:
+        kb.button(text=text, callback_data=NavCb(a=action))
+    kb.adjust(1)
+    await message.answer("Какой из них?", reply_markup=kb.as_markup())
+
+
+@router.callback_query(Onboarding.series, PickCb.filter())
+async def pick_series(callback: CallbackQuery, callback_data: PickCb, app: App) -> None:
+    app.mark_search_chosen(callback.from_user.id, "series")
+    app.rate(callback.from_user.id, callback_data.t, 5, "onboarding")
+    await callback.message.edit_reply_markup(reply_markup=undo_kb(f"Добавил: {app.label(callback_data.t)}", "film",
+                                                                  callback_data.t))
+    await callback.message.answer("Ещё один сериал? Напиши название или переходи к следующему этапу.",
+                                  reply_markup=nav_kb(*SERIES_NAV))
+    await callback.answer()
+
+
+@router.callback_query(Onboarding.series, NavCb.filter(F.a == "series_done"))
+async def series_done(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Onboarding.people)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(texts.ASK_PEOPLE, reply_markup=nav_kb(*PEOPLE_NAV))
+    await callback.answer()
+
+
+@router.callback_query(Onboarding.people, NavCb.filter(F.a == "back_series"))
+async def back_to_series(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Onboarding.series)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(texts.ASK_SERIES, reply_markup=nav_kb(*SERIES_NAV))
+    await callback.answer()
+
+
+# --- шаг 4: любимые люди ---
 
 @router.message(Onboarding.people, F.text, NOT_COMMAND)
 async def search_person(message: Message, app: App) -> None:
@@ -205,18 +253,25 @@ async def people_done(callback: CallbackQuery, state: FSMContext, bot: Bot, app:
     await show_calibration(bot, callback.from_user.id, state, app)
 
 
-# --- шаг 4: калибровка в одном сообщении ---
+# --- шаг 5: калибровка в одном сообщении: сначала фильмы, потом сериалы ---
+
+CALIBRATION_TOTAL = calibration.CALIBRATION_SIZE + calibration.CALIBRATION_SERIES
+
 
 async def show_calibration(bot: Bot, user_id: int, state: FSMContext, app: App, tconst: str | None = None) -> None:
-    """Показать фильм калибровки (новый или переданный — при «Назад») на месте прежнего."""
+    """Показать фильм или сериал калибровки (новый или переданный — при «Назад») на месте прежнего."""
     data = await state.get_data()
-    if tconst is None:
-        skip = [t for t in excluded_films(app.conn, user_id) if t in app.pool.index]
-        not_seen = data["answers"].count("ns")
-        tconst = calibration.next_film(app.pool, data["shown"] + skip, not_seen, set(data["genres"]),
-                                       np.random.default_rng())
     n = len(data["shown"])
-    card = await build_card(app, tconst, note=f"Фильм {n + 1} из {calibration.CALIBRATION_SIZE}")
+    films_part = n < calibration.CALIBRATION_SIZE
+    if tconst is None:
+        pool = app.pool if films_part else app.series_pool
+        skip = [t for t in excluded_films(app.conn, user_id) if t in pool.index]
+        shown = [t for t in data["shown"] if t in pool.index]
+        not_seen = data["answers"].count("ns")
+        tconst = calibration.next_film(pool, shown + skip, not_seen, set(data["genres"]), np.random.default_rng())
+    note = (f"Фильм {n + 1} из {calibration.CALIBRATION_SIZE}" if films_part
+            else f"Сериал {n - calibration.CALIBRATION_SIZE + 1} из {calibration.CALIBRATION_SERIES}")
+    card = await build_card(app, tconst, note=note)
     nav = [("← Назад", "cal_back")] if n else None
     msg = await show(bot, user_id, card, movie_kb(tconst, "cal", card.trailer, card.watch, nav), data.get("msg"))
     await state.update_data(current=tconst, msg=msg)
@@ -236,7 +291,7 @@ async def calibration_answer(callback: CallbackQuery, callback_data: MovieCb, st
         app.react(user, t, "not_seen" if callback_data.a == "ns" else "skip")
     await callback.answer()
     await state.update_data(shown=data["shown"] + [t], answers=data["answers"] + [callback_data.a], current=None)
-    if len(data["shown"]) + 1 < calibration.CALIBRATION_SIZE:
+    if len(data["shown"]) + 1 < CALIBRATION_TOTAL:
         await show_calibration(bot, user, state, app)
         return
     with app.conn:

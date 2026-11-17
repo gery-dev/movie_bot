@@ -77,15 +77,17 @@ class TMDB:
         )
         return data
 
-    async def find_movie_id(self, tconst: str) -> int | None:
+    async def find_movie_id(self, tconst: str, kind: str = "movie") -> int | None:
+        """ID TMDB по IMDb ID. У фильмов и сериалов в TMDB разные номера (один номер — разные записи)."""
         data = await self.get(f"/find/{tconst}", external_source="imdb_id")
-        results = data.get("movie_results", [])
+        results = data.get("tv_results" if kind == "series" else "movie_results", [])
         return results[0]["id"] if results else None
 
-    async def movie(self, tmdb_id: int) -> dict:
-        """Карточка фильма на русском с трейлерами (рус., затем англ.) и сервисами просмотра."""
+    async def movie(self, tmdb_id: int, kind: str = "movie") -> dict:
+        """Карточка фильма или сериала на русском с трейлерами (рус., затем англ.) и сервисами просмотра.
+        У сериала свои адреса (/tv/…) и поля: name, first_air_date, number_of_seasons, episode_run_time."""
         return await self.get(
-            f"/movie/{tmdb_id}", shrink=shrink_movie, language="ru-RU",
+            f"/{_path(kind)}/{tmdb_id}", shrink=shrink_movie, language="ru-RU",
             append_to_response="videos,watch/providers", include_video_language="ru,en",
         )
 
@@ -124,9 +126,10 @@ class TMDB:
         ids = await asyncio.gather(*(self.get(f"/person/{p['id']}/external_ids") for p in people))
         return [(x["imdb_id"], p["name"]) for p, x in zip(people, ids) if x.get("imdb_id")]
 
-    async def overview_en(self, tmdb_id: int) -> str | None:
-        """Описание на английском — для фильмов, у которых нет русского."""
-        data = await self.get(f"/movie/{tmdb_id}", shrink=lambda m: {"overview": m.get("overview")}, language="en-US")
+    async def overview_en(self, tmdb_id: int, kind: str = "movie") -> str | None:
+        """Описание на английском — для фильмов и сериалов, у которых нет русского."""
+        data = await self.get(f"/{_path(kind)}/{tmdb_id}", shrink=lambda m: {"overview": m.get("overview")},
+                              language="en-US")
         return data.get("overview") or None
 
 
@@ -138,6 +141,10 @@ def shrink_movie(movie: dict) -> dict:
     videos = movie.get("videos", {}).get("results", [])
     movie["videos"] = {"results": [v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer"]}
     return movie
+
+
+def _path(kind: str) -> str:
+    return "tv" if kind == "series" else "movie"
 
 
 def poster_url(movie: dict) -> str | None:
@@ -159,13 +166,14 @@ def watch_providers(movie: dict) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-async def enrich_one(tmdb: TMDB, tconst: str, title_ru: str | None) -> tuple | None:
-    tmdb_id = await tmdb.find_movie_id(tconst)
+async def enrich_one(tmdb: TMDB, tconst: str, title_ru: str | None, kind: str = "movie") -> tuple | None:
+    tmdb_id = await tmdb.find_movie_id(tconst, kind)
     if tmdb_id is None:
         return None
-    m = await tmdb.movie(tmdb_id)
-    title = m.get("title") or ""
+    m = await tmdb.movie(tmdb_id, kind)
+    title = m.get("title") or m.get("name") or ""
     new_title_ru = title_ru or (title if CYRILLIC.search(title) else None)
+    runtimes = [r for r in m.get("episode_run_time") or [] if r]
     return (
         tmdb_id,
         ",".join(m.get("origin_country") or []) or None,
@@ -173,6 +181,8 @@ async def enrich_one(tmdb: TMDB, tconst: str, title_ru: str | None) -> tuple | N
         m.get("overview") or None,
         m.get("poster_path") or None,
         new_title_ru,
+        m.get("number_of_seasons") or None,  # у фильма — пусто
+        min(runtimes) if runtimes else None,
         tconst,
     )
 
@@ -180,21 +190,23 @@ async def enrich_one(tmdb: TMDB, tconst: str, title_ru: str | None) -> tuple | N
 async def enrich(limit: int | None) -> None:
     conn = connect()
     tmdb = TMDB(conn)
-    sql = "SELECT tconst, title_ru FROM movies WHERE tmdb_id IS NULL ORDER BY votes DESC"
+    sql = "SELECT tconst, title_ru, kind FROM movies WHERE tmdb_id IS NULL ORDER BY votes DESC"
     todo = conn.execute(sql + (f" LIMIT {int(limit)}" if limit else "")).fetchall()
-    print(f"Фильмов без данных TMDB: {len(todo)}")
+    print(f"Без данных TMDB: {len(todo)}")
 
     t0, found, missing = time.time(), 0, []
     try:
         for start in range(0, len(todo), BATCH):
             batch = todo[start:start + BATCH]
-            results = await asyncio.gather(*(enrich_one(tmdb, r["tconst"], r["title_ru"]) for r in batch))
+            results = await asyncio.gather(*(enrich_one(tmdb, r["tconst"], r["title_ru"], r["kind"]) for r in batch))
             rows = [r for r in results if r]
             missing += [b["tconst"] for b, r in zip(batch, results) if r is None]
             with conn:
                 conn.executemany(
+                    # сезоны из TMDB; длину серии берём оттуда, только если в IMDb её не было
                     """UPDATE movies SET tmdb_id = ?, country = ?, language = ?, overview_ru = ?,
-                       poster_path = ?, title_ru = ? WHERE tconst = ?""",
+                       poster_path = ?, title_ru = ?, seasons = ?, episode_runtime = COALESCE(episode_runtime, ?)
+                       WHERE tconst = ?""",
                     rows,
                 )
             found += len(rows)

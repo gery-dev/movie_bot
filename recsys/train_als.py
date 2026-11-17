@@ -26,7 +26,7 @@ ALS_FILE = ROOT / "data" / "processed" / f"als_{DATASET}.npz"
 def main() -> None:
     t0 = time.time()
     with connect() as conn:
-        ids = [r[0] for r in conn.execute("SELECT tconst FROM movies ORDER BY tconst")]
+        ids = [r[0] for r in conn.execute("SELECT tconst FROM movies WHERE kind = 'movie' ORDER BY tconst")]
     ratings = load_ratings(DATASET)
     liked = ratings[ratings.rating >= CF_MIN_RATING]
     als = ALS(Catalog(ids), **PARAMS).fit(liked)

@@ -10,8 +10,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InputMediaPhoto
 
 from bot.keyboards import movie_kb
-from bot.services import App
-from bot.texts import GENRES_RU
+from bot.services import App, years_label
+from bot.texts import GENRES_RU, seasons_word
 from data_pipeline.tmdb import IMAGE_URL, watch_providers
 
 log = logging.getLogger(__name__)
@@ -23,8 +23,8 @@ def card_text(movie: dict, directors: list[str], actors: list[str], providers: l
     """Текст карточки в HTML; описание обрезается, чтобы уложиться в подпись к фото."""
     e = html.escape
     title = movie.get("title_ru") or movie.get("title")
-    year = f" ({int(movie['year'])})" if pd.notna(movie.get("year")) else ""
-    lines = [f"<b>{e(title)}</b>{year}"]
+    series = movie.get("kind") == "series"
+    lines = [f"<b>{e(title)}</b>{years_label(movie.get('year'), movie.get('end_year'), movie.get('kind'))}"]
     if movie.get("title_ru") and movie.get("title") and movie["title"] != movie["title_ru"]:
         lines.append(f"<i>{e(movie['title'])}</i>")
     facts = []
@@ -32,13 +32,18 @@ def card_text(movie: dict, directors: list[str], actors: list[str], providers: l
         facts.append(f"IMDb {movie['rating']:.1f}".replace(".", ","))
     if pd.notna(movie.get("runtime")):
         facts.append(f"{int(movie['runtime'])} мин")
+    if series and pd.notna(movie.get("seasons")):
+        facts.append(f"{int(movie['seasons'])} {seasons_word(int(movie['seasons']))}")
+    if series and pd.notna(movie.get("episode_runtime")):
+        facts.append(f"серия ~{int(movie['episode_runtime'])} мин")
     genres = [GENRES_RU.get(g, g) for g in (movie.get("genres") or "").split(",") if g]
     if genres:
         facts.append(", ".join(genres))
     if facts:
         lines.append(" · ".join(facts))
-    if directors:
-        lines.append(f"Режиссёр: {e(', '.join(directors))}")
+    if directors:  # у сериала в IMDb — режиссёры всех серий, показываем первых двух
+        shown = directors[:2] if series else directors
+        lines.append(f"{'Режиссёры' if series and len(shown) > 1 else 'Режиссёр'}: {e(', '.join(shown))}")
     if actors:
         lines.append(f"В ролях: {e(', '.join(actors))}")
     if providers:
@@ -78,7 +83,7 @@ async def build_card(app: App, tconst: str, note: str | None = None) -> Card:
     movie = dict(app.conn.execute("SELECT * FROM movies WHERE tconst = ?", (tconst,)).fetchone())
     trailer, providers = None, []
     if movie.get("tmdb_id"):
-        details = await app.tmdb.movie(movie["tmdb_id"])
+        details = await app.tmdb.movie(movie["tmdb_id"], movie.get("kind") or "movie")
         app.conn.commit()  # кэш TMDB
         trailer, providers = await app.tmdb.trailer_url(details), watch_providers(details)
         app.conn.commit()  # кэш проверки YouTube

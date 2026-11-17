@@ -1,7 +1,10 @@
 """Загрузка датасетов IMDb в SQLite.
 
     python -m data_pipeline.imdb download              # скачать файлы в data/raw/
-    python -m data_pipeline.imdb load --min-votes 5000 # отфильтровать и загрузить в БД
+    python -m data_pipeline.imdb load --min-votes 5000 # отфильтровать и загрузить в БД (фильмы и сериалы)
+
+Типы IMDb: movie → kind = movie; tvSeries и tvMiniSeries → kind = series. Связи с людьми и жанрами
+пересобираются целиком, поэтому фильмы в --types должны быть всегда (иначе у них пропадут режиссёры и актёры).
 
 Данные IMDb разрешено использовать только в некоммерческих целях:
 https://developer.imdb.com/non-commercial-datasets/
@@ -17,6 +20,7 @@ import pandas as pd
 from db.database import ROOT, connect
 
 RAW_DIR = ROOT / "data" / "raw"
+TYPES = ("movie", "tvSeries", "tvMiniSeries")  # телефильмы (tvMovie) пока не берём — решение пользователя
 BASE_URL = "https://datasets.imdbws.com"
 FILES = ["title.basics", "title.ratings", "title.crew", "title.principals", "name.basics", "title.akas"]
 CHUNK = 1_000_000
@@ -65,7 +69,9 @@ def none_if_na(rows):
     return [tuple(None if pd.isna(v) else v.item() if hasattr(v, "item") else v for v in row) for row in rows]
 
 
-def load(min_votes: int) -> None:
+def load(min_votes: int, types: tuple[str, ...] = TYPES) -> None:
+    if "movie" not in types:
+        raise ValueError("в --types нужен movie: связи с людьми и жанрами пересобираются для всего каталога")
     t0 = time.time()
 
     ratings = read_tsv("title.ratings", ["tconst", "averageRating", "numVotes"], chunksize=None)
@@ -75,12 +81,14 @@ def load(min_votes: int) -> None:
 
     basics = filter_chunks(
         "title.basics",
-        ["tconst", "titleType", "primaryTitle", "originalTitle", "isAdult", "startYear", "runtimeMinutes", "genres"],
-        lambda c: (c["titleType"] == "movie") & (c["isAdult"] == "0") & c["tconst"].isin(ids),
+        ["tconst", "titleType", "primaryTitle", "originalTitle", "isAdult", "startYear", "endYear", "runtimeMinutes",
+         "genres"],
+        lambda c: c["titleType"].isin(types) & (c["isAdult"] == "0") & c["tconst"].isin(ids),
     )
     movies = basics.merge(ratings, on="tconst")
     ids = set(movies["tconst"])
-    print(f"Фильмов с числом голосов ≥ {min_votes}: {len(movies)}")
+    movies["kind"] = (movies["titleType"] != "movie").map({True: "series", False: "movie"})
+    print(f"С числом голосов ≥ {min_votes}: {movies['kind'].value_counts().to_dict()}")
 
     akas = filter_chunks(
         "title.akas", ["titleId", "ordering", "title", "region", "types"],
@@ -116,8 +124,13 @@ def load(min_votes: int) -> None:
     genres = movies.dropna(subset=["genres"]).assign(genre=lambda d: d["genres"].str.split(","))
     genres = genres.explode("genre")[["tconst", "genre"]]
 
-    for col in ["startYear", "runtimeMinutes"]:
+    for col in ["startYear", "endYear", "runtimeMinutes"]:
         movies[col] = to_int(movies[col])
+    # у сериала в runtimeMinutes длина серии: в runtime её не кладём, иначе фильтры фильмов («до 2 часов») её поймают
+    series = movies["kind"] == "series"
+    movies["episodeRuntime"] = movies["runtimeMinutes"].where(series)
+    movies["runtimeMinutes"] = movies["runtimeMinutes"].where(~series)
+    movies["endYear"] = movies["endYear"].where(series)
     movies["averageRating"] = pd.to_numeric(movies["averageRating"])
     people["birthYear"] = to_int(people["birthYear"])
     people["deathYear"] = to_int(people["deathYear"])
@@ -126,14 +139,19 @@ def load(min_votes: int) -> None:
     with conn:
         # фильмы и людей обновляем на месте: на них могут ссылаться оценки пользователей
         conn.executemany(
-            """INSERT INTO movies (tconst, title, original_title, title_ru, year, runtime, genres, rating, votes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            # русское название IMDb не затирает уже дописанное из TMDB (у фильмов его там больше)
+            """INSERT INTO movies (tconst, title, original_title, title_ru, year, runtime, genres, rating, votes,
+                                   kind, end_year, episode_runtime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(tconst) DO UPDATE SET
                  title = excluded.title, original_title = excluded.original_title,
-                 title_ru = excluded.title_ru, year = excluded.year, runtime = excluded.runtime,
-                 genres = excluded.genres, rating = excluded.rating, votes = excluded.votes""",
+                 title_ru = COALESCE(excluded.title_ru, movies.title_ru), year = excluded.year,
+                 runtime = excluded.runtime, genres = excluded.genres, rating = excluded.rating,
+                 votes = excluded.votes, kind = excluded.kind, end_year = excluded.end_year,
+                 episode_runtime = excluded.episode_runtime""",
             none_if_na(movies[["tconst", "primaryTitle", "originalTitle", "title_ru", "startYear",
-                               "runtimeMinutes", "genres", "averageRating", "numVotes"]].itertuples(index=False)),
+                               "runtimeMinutes", "genres", "averageRating", "numVotes", "kind", "endYear",
+                               "episodeRuntime"]].itertuples(index=False)),
         )
         conn.executemany(
             """INSERT INTO people (nconst, name, birth_year, death_year) VALUES (?, ?, ?, ?)
@@ -159,8 +177,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["download", "load"])
     parser.add_argument("--min-votes", type=int, default=5000)
+    parser.add_argument("--types", default=",".join(TYPES), help="типы IMDb через запятую; movie обязателен")
     args = parser.parse_args()
     if args.command == "download":
         download()
     else:
-        load(args.min_votes)
+        load(args.min_votes, tuple(args.types.split(",")))

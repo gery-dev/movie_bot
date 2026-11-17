@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 class Onboarding(StatesGroup):
     genres = State()
     films = State()
+    series = State()
     people = State()
 
 

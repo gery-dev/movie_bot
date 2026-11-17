@@ -49,7 +49,7 @@ def load_ratings(name: str) -> pd.DataFrame:
     ratings = pd.read_csv(ML_DIR / name / "ratings.csv")
     ratings = ratings.merge(load_links(name), on="movieId")
     with connect() as conn:
-        known = {row[0] for row in conn.execute("SELECT tconst FROM movies")}
+        known = {row[0] for row in conn.execute("SELECT tconst FROM movies WHERE kind = 'movie'")}
     return ratings[ratings["tconst"].isin(known)]
 
 
@@ -57,7 +57,7 @@ def link(name: str) -> None:
     links = load_links(name)
     ratings = pd.read_csv(ML_DIR / name / "ratings.csv", usecols=["userId", "movieId"])
     with connect() as conn:
-        known = {row[0] for row in conn.execute("SELECT tconst FROM movies")}
+        known = {row[0] for row in conn.execute("SELECT tconst FROM movies WHERE kind = 'movie'")}
         db_total = conn.execute("SELECT count(*) FROM movies").fetchone()[0]
 
     links["in_db"] = links["tconst"].isin(known)

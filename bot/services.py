@@ -36,7 +36,7 @@ class Carousel:
     why: dict[str, str] = field(default_factory=dict)  # фильм → «Почему: …»
     query: str | None = None     # текст запроса, если это результаты поиска обычным текстом
     group: str | None = None     # имена участников, если это подборка для компании (/together)
-    kind: str | None = None      # new — новинки по вкусу (/new)
+    kind: str | None = None      # new — новинки по вкусу (/new), series — сериалы (/series)
     search_id: int | None = None  # строка search_log, если это результаты поиска текстом
 
     @property
@@ -49,21 +49,36 @@ class Carousel:
         return self.films[self.idx]
 
 
+def years_label(year, end_year, kind) -> str:
+    """« (2010)» у фильма; у сериала « (2008–2013)», а если он ещё идёт — « (2019–…)»."""
+    if pd.isna(year):
+        return ""
+    if kind != "series":
+        return f" ({int(year)})"
+    end = "…" if pd.isna(end_year) else str(int(end_year))
+    return f" ({int(year)})" if end == str(int(year)) else f" ({int(year)}–{end})"
+
+
 class App:
     def __init__(self, conn: sqlite3.Connection | None = None, with_als: bool = True):
         self.conn = conn or connect()
-        als = None
+        als = series_als = None
         if with_als:  # векторы фильмов готовит python -m recsys.train_als
-            ids = [r[0] for r in self.conn.execute("SELECT tconst FROM movies ORDER BY tconst")]
+            ids = [r[0] for r in self.conn.execute("SELECT tconst FROM movies WHERE kind = 'movie' ORDER BY tconst")]
             als = ALS.load(ALS_FILE, Catalog(ids))
-        self.rec = Recommender(self.conn, als=als)
+            all_ids = [r[0] for r in self.conn.execute("SELECT tconst FROM movies ORDER BY tconst")]
+            series_als = ALS.load(ALS_FILE, Catalog(all_ids))
+        self.rec = Recommender(self.conn, als=als)  # фильмы — отдельно, их подборки от сериалов не меняются
+        # /series: каталог фильмов и сериалов вместе, чтобы вкус брался и из оценок фильмов
+        self.series_rec = Recommender(self.conn, als=series_als, kinds=("movie", "series"))
         if with_als:  # модели для запросов текстом и тональности грузятся секунды — лучше при запуске
             self.rec.text_model()
             load_sentiment()
-        self.movies = self.rec.movies.set_index("tconst")
-        self.pool = calibration.calibration_pool(
-            pd.read_sql("SELECT tconst, year, genres, country, rating, votes FROM movies", self.conn).set_index("tconst")
-        )
+        self.movies = self.series_rec.movies.set_index("tconst")  # весь каталог: подписи и карточки
+        catalog = pd.read_sql("SELECT tconst, year, genres, country, rating, votes, kind FROM movies",
+                              self.conn).set_index("tconst")
+        self.pool = calibration.calibration_pool(catalog[catalog.kind == "movie"])
+        self.series_pool = calibration.calibration_pool(catalog[catalog.kind == "series"])  # те же пороги
         self.tmdb = TMDB(self.conn)
         people = pd.read_sql(
             """SELECT mp.tconst, mp.role, mp.ord, coalesce(p.name_ru, p.name) AS name FROM movie_people mp JOIN people p USING (nconst)
@@ -80,12 +95,16 @@ class App:
 
     def _build_search(self) -> None:
         """Индексы нечёткого поиска: фильмы по трём названиям, люди по имени латиницей и русским вариантам."""
-        m = pd.read_sql("SELECT tconst, title_ru, title, original_title, votes FROM movies", self.conn)
-        self.film_index = NameIndex(m.tconst, m[["title_ru", "title", "original_title"]].values.tolist(), m.votes)
+        m = pd.read_sql("SELECT tconst, title_ru, title, original_title, votes, kind FROM movies", self.conn)
+        films, series = m[m.kind == "movie"], m[m.kind == "series"]
+        self.film_index = NameIndex(films.tconst, films[["title_ru", "title", "original_title"]].values.tolist(), films.votes)
+        self.series_index = NameIndex(series.tconst, series[["title_ru", "title", "original_title"]].values.tolist(),
+                                      series.votes)
+        # люди — по фильмам, как раньше (число фильмов на кнопке и известность)
         p = pd.read_sql(
             """SELECT p.nconst, p.name, p.name_ru, p.aka_ru, count(DISTINCT mp.tconst) AS films, sum(m.votes) AS fame
                FROM people p JOIN movie_people mp USING (nconst) JOIN movies m USING (tconst)
-               GROUP BY p.nconst""", self.conn)
+               WHERE m.kind = 'movie' GROUP BY p.nconst""", self.conn)
         variants = [[name, ru] + (aka.split("|") if isinstance(aka, str) else [])
                     for name, ru, aka in zip(p.name, p.name_ru, p.aka_ru)]
         self.people_index = NameIndex(p.nconst, variants, p.fame)
@@ -95,6 +114,10 @@ class App:
     def search_movies(self, query: str, limit: int = 5) -> list[tuple[str, str]]:
         """[(tconst, «Название (год)»)] — с опечатками, по-русски и латиницей; при равном сходстве известнее выше."""
         return [(t, self.label(t)) for t in self.film_index.search(query, limit)]
+
+    def search_series(self, query: str, limit: int = 5) -> list[tuple[str, str]]:
+        """То же для сериалов: [(tconst, «Название (2008–2013)»)]."""
+        return [(t, self.label(t)) for t in self.series_index.search(query, limit)]
 
     async def search_people(self, query: str, limit: int = 5) -> list[dict]:
         """Ищем у себя (имена латиницей и по-русски из Wikidata, опечатки прощаются). Если по-русски
@@ -114,8 +137,7 @@ class App:
 
     def label(self, tconst: str) -> str:
         m = self.movies.loc[tconst]
-        year = f" ({int(m.year)})" if pd.notna(m.year) else ""
-        return f"{m.title_ru or m.title}{year}"
+        return f"{m.title_ru or m.title}{years_label(m.year, m.end_year, m.kind)}"
 
     def people_of(self, tconst: str) -> tuple[list[str], list[str]]:
         g = self.credits.get(tconst)

@@ -85,7 +85,7 @@ def main(dataset: str, sample_users: int | None = None, eval_users: int | None =
     train, test = temporal_split(ratings)
     fit_part, valid = temporal_split(train)
     with connect() as conn:
-        known = {row[0] for row in conn.execute("SELECT tconst FROM movies")}
+        known = {row[0] for row in conn.execute("SELECT tconst FROM movies WHERE kind = 'movie'")}
     catalog = Catalog(sorted(set(load_links(dataset).tconst) & known))
     print(f"{dataset}: каталог {len(catalog)} фильмов, обучение {len(train)}, тест {len(test)} оценок, "
           f"пользователей {train.userId.nunique()}")

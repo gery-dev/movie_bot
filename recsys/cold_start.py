@@ -53,7 +53,7 @@ def main() -> None:
     eval_users = rng.choice(test[test.rating >= RELEVANT].userId.unique(), N_USERS, replace=False)
     others = train[~train.userId.isin(set(eval_users))]  # ALS не видит оцениваемых пользователей
 
-    ids = [r[0] for r in conn.execute("SELECT tconst FROM movies ORDER BY tconst")]
+    ids = [r[0] for r in conn.execute("SELECT tconst FROM movies WHERE kind = 'movie' ORDER BY tconst")]
     als = ALS(Catalog(ids), **ALS_PARAMS).fit(others[others.rating >= CF_MIN_RATING])  # как в боте
     rec = Recommender(conn, als=als)
     movies = pd.read_sql("SELECT tconst, year, genres, country, rating, votes FROM movies", conn).set_index("tconst")

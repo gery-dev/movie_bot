@@ -11,7 +11,8 @@
 import numpy as np
 import pandas as pd
 
-CALIBRATION_SIZE = 10
+CALIBRATION_SIZE = 10    # фильмов
+CALIBRATION_SERIES = 3   # сериалов после фильмов: фильмовая часть прежняя, подборки фильмов у новичков не меняются
 MIN_YEAR = 2000
 MIN_VOTES = 200_000  # ~883 фильма: «Интерстеллар», «Дэдпул», «Холодное сердце»…
 MIN_RATING = 6.5
