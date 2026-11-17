@@ -240,6 +240,8 @@ def _app_with_db(tmp_path):
     app = services.App.__new__(services.App)  # без загрузки моделей: нужна только БД
     app.conn = connect(tmp_path / "t.db")
     app.conn.executemany("INSERT INTO movies (tconst, title) VALUES (?, ?)", [(f"tt{i:02d}", str(i)) for i in range(5)])
+    import pandas as pd
+    app.movies = pd.read_sql("SELECT tconst, kind FROM movies", app.conn).set_index("tconst")
     return app
 
 
@@ -404,7 +406,7 @@ def test_not_interested_asks_why_and_replaces_unanswered_question(monkeypatch):
     monkeypatch.setattr(recommend, "advance", fake_advance)
     bot, sent, deleted, callback = _reason_fakes()
     app = SimpleNamespace(carousels={1: Carousel(films=["tt01", "tt02"], message_id=7)}, reason_msgs={},
-                          react=lambda *a, **k: None, label=lambda t: f"Фильм <{t}>")
+                          react=lambda *a, **k: None, label=lambda t: f"Фильм <{t}>", is_series=lambda t: False)
 
     async def press(user, action, film):
         await recommend.card_answer(callback(user), MovieCb(a=action, t=film, c="rec"), None, bot, app)
@@ -448,3 +450,10 @@ def test_series_card_shows_years_seasons_and_episode():
     assert "Режиссёры: A, B" in text and "C" not in text.split("Режиссёры: ")[1].split("\n")[0]
     assert years_label(2019, None, "series") == " (2019–…)" and years_label(2016, 2016, "series") == " (2016)"
     assert years_label(2010, None, "movie") == " (2010)"
+
+
+def test_reason_labels_for_series():
+    from bot.keyboards import reason_kb
+    film = [b.text for row in reason_kb("tt1").inline_keyboard for b in row]
+    show = [b.text for row in reason_kb("tt2", series=True).inline_keyboard for b in row]
+    assert "Не хочу такое кино" in film and "Не хочу такой сериал" in show and "Не хочу такое кино" not in show

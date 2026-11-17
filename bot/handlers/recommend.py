@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.cards import build_card, send_card, show
-from bot.keyboards import (MovieCb, NavCb, PersonCb, REASONS, ReasonCb, STATUS, TodayCb, movie_kb, nav_kb, reason_kb,
+from bot.keyboards import (MovieCb, NavCb, PersonCb, REASONS, REASONS_SERIES, ReasonCb, STATUS, TodayCb, movie_kb, nav_kb, reason_kb,
                            status_kb, today_kb)
 from bot.services import App, Carousel
 from bot.states import Review, Today
@@ -362,7 +362,7 @@ async def ask_reason(bot: Bot, user_id: int, app: App, tconst: str) -> None:
         except TelegramBadRequest:
             pass
     msg = await bot.send_message(user_id, f"Почему «{escape(app.label(tconst))}» не подошёл? Можно не отвечать.",
-                                 reply_markup=reason_kb(tconst))
+                                 reply_markup=reason_kb(tconst, app.is_series(tconst)))
     app.reason_msgs[user_id] = msg.message_id
 
 
@@ -373,7 +373,8 @@ async def reason_answer(callback: CallbackQuery, callback_data: ReasonCb, app: A
         app.set_reason(user, callback_data.t, callback_data.r)
         if app.reason_msgs.get(user) == callback.message.message_id:
             del app.reason_msgs[user]
-        await callback.message.edit_reply_markup(reply_markup=status_kb(f"Не интересно: {REASONS[callback_data.r].lower()}"))
+        labels = REASONS_SERIES if app.is_series(callback_data.t) else REASONS
+        await callback.message.edit_reply_markup(reply_markup=status_kb(f"Не интересно: {labels[callback_data.r].lower()}"))
     await callback.answer("Спасибо!")
 
 

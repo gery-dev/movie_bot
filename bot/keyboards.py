@@ -59,6 +59,7 @@ class ReasonCb(CallbackData, prefix="rs"):
 ACTIONS = {"ni": "Не интересно", "lt": "Посмотрю позже", "hd": "Скрыть навсегда"}
 # необязательный вопрос после «Не интересно» (ТЗ п. 4.1 называет «уже видел» причиной отказа)
 REASONS = {"seen": "Уже видел", "genre": "Не мой жанр", "kind": "Не хочу такое кино"}
+REASONS_SERIES = {**REASONS, "kind": "Не хочу такой сериал"}  # те же коды, подпись под сериал
 STATUS = {"r": "Оценка {v} ★", "ns": "Не смотрел", "sk": "Пропущено", "sn": "В списке «видел»",
           "ni": "Не интересно", "lt": "В планах", "hd": "Скрыт", "uh": "Возвращён в подборки"}
 
@@ -125,9 +126,9 @@ def status_kb(text: str, trailer: str | None = None, watch: str | None = None,
     return kb.as_markup()
 
 
-def reason_kb(tconst: str) -> InlineKeyboardMarkup:
+def reason_kb(tconst: str, series: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for code, label in REASONS.items():
+    for code, label in (REASONS_SERIES if series else REASONS).items():
         kb.button(text=label, callback_data=ReasonCb(t=tconst, r=code))
     kb.adjust(2, 1)  # в одну строку три подписи на телефоне не помещаются
     return kb.as_markup()

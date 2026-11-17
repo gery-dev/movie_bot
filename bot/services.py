@@ -135,6 +135,9 @@ class App:
 
     # --- описание фильма ---
 
+    def is_series(self, tconst: str) -> bool:
+        return tconst in self.movies.index and self.movies.at[tconst, "kind"] == "series"
+
     def label(self, tconst: str) -> str:
         m = self.movies.loc[tconst]
         return f"{m.title_ru or m.title}{years_label(m.year, m.end_year, m.kind)}"
