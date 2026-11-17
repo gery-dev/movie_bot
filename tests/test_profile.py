@@ -88,12 +88,12 @@ def test_old_rating_weighs_less(profiler):
     assert weight(profiler, old, "genre:Romance") == pytest.approx(weight(profiler, fresh, "genre:Romance") / 2)
 
 
-def test_not_seen_is_weak_negative(conn, profiler):
+def test_not_seen_does_not_change_taste(conn, profiler):
     record_rating(conn, USER, "tt05", 5)
     record_reaction(conn, USER, "tt06", "not_seen")
     p = rebuild_profile(conn, profiler, USER)
-    assert -weight(profiler, p, "genre:Comedy") < weight(profiler, p, "genre:Romance") / 5
-    assert weight(profiler, p, "genre:Comedy") < 0
+    assert weight(profiler, p, "genre:Comedy") == 0
+    assert weight(profiler, p, "genre:Romance") > 0
 
 
 def test_seen_goes_to_list_without_taste_change(conn, profiler):
@@ -216,7 +216,9 @@ def test_favorite_bonus_raises_film(conn):
     add_favorite(conn, USER, "nm2")
     after = score()
     assert after["tt04"] > before["tt04"]                      # фильм любимого режиссёра поднялся
-    assert after.drop("tt04").equals(before.drop("tt04"))      # остальные не изменились
+    # остальные не поднялись (обойдённый на шаге 1 сосед может опуститься на место)
+    others = before.drop("tt04")
+    assert (after[others.index] <= others).all()
 
 
 def test_recommend_ignores_saved_mood(conn):
@@ -270,6 +272,14 @@ def test_group_skips_films_seen_by_anyone_and_fits_both(conn):
 def test_new_user_gets_popular_films(conn):
     out = Recommender(conn).recommend(conn, 99, k=3, answers={})
     assert out.tconst.iloc[0] in {"tt01", "tt02"}
+
+
+def test_film_without_rating_keeps_popularity(conn):
+    # фильм из проката TMDB: голосов 0, рейтинга IMDb нет — раньше из-за него популярность была NaN у всех
+    conn.execute("INSERT INTO movies (tconst, title, year, votes, rating) VALUES ('tt10', 'New', 2026, 0, NULL)")
+    rec = Recommender(conn)
+    assert np.isfinite(rec.popularity).all()
+    assert rec.recommend(conn, 99, k=3, answers={}).tconst.iloc[0] in {"tt01", "tt02"}
 
 
 # --- калибровка ---

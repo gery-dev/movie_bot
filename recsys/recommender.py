@@ -8,8 +8,8 @@
 кандидатов ограничены по масштабу, поэтому B действительно задаёт вес пожеланий.
 
 Долгосрочная часть — гибрид из этапа 2: ALS (обучена на MovieLens, пользователь бота
-«встраивается» в неё по своим оценкам) и профиль по признакам. Пока оценок мало, работает
-только профиль; если событий нет совсем — взвешенный рейтинг IMDb.
+«встраивается» в неё по своим оценкам) и профиль по признакам. Пока оценок мало, к вкусу
+подмешивается известность фильма (число голосов IMDb); если событий нет совсем — только она.
 Коэффициенты подобраны на пользователях MovieLens: python -m recsys.tune.
 """
 from datetime import datetime
@@ -41,7 +41,10 @@ from recsys.today import today_filter, today_scores
 A, B, C = 1.0, 0.3, 0.1
 # Пишется в recommendations.model_version при каждом показе. Менять вручную, когда меняется то, что влияет
 # на подборку: ALS-векторы, веса (A, B, C, W_NEW, W_GENRE, W_ERA, W_LANG, MMR), MIN_VOTES, формула.
-MODEL_VERSION = "als32m-wnew0.35-eraref"  # eraref (10.11) — в подстройке под эпоху учитываются отказы
+MODEL_VERSION = "als32m-wnew0.35-eraref-popfix-fame-ns0"  # eraref (10.11) — в эпохе учитываются отказы;
+                                                          # popfix (17.11) — популярность без NaN от фильмов без рейтинга;
+                                                          # fame (17.11) — новичку известность вместо рейтинга;
+                                                          # ns0 (17.11) — «не смотрел» не меняет вкус
 CANDIDATES = 300
 CF_WEIGHT = 0.5            # доля ALS в долгосрочной части (этап 2)
 # Холодный старт (recsys/cold_start.py, 150 пользователей MovieLens, NDCG@10; без данных — 0,048):
@@ -52,6 +55,17 @@ MIN_RATINGS_FOR_CF = 1
 # Нелюбимое учитывает профиль. Проверка и выбор 32M — в recsys/train_als.py.
 CF_MIN_RATING = 4
 POPULARITY_PRIOR = 5
+# Что подмешивается в долю N0 / (n + N0) и выдаётся без событий — известность (log10 голосов IMDb), а не
+# взвешенный рейтинг: рейтинг поднимает классику и фильмы с накрученным рейтингом. Фильмам вне ALS (UNKNOWN_POP)
+# оставлен взвешенный рейтинг: целиком заменить его голосами — MovieLens small, импорт −0,009 [−0,018; −0,002].
+# Проверка 17.11 (recsys/replay.py — журнал онлайн-теста без владельца; бутстреп по людям):
+#   журнал, 0–2 оценки (4 человека с хорошими и плохими ответами): AUC 0,34 → 0,53, +0,20 [+0,01; +0,41],
+#     лучше у 3, хуже у 0; от 3 оценок −0,03 [−0,10; +0,04] — шум;
+#   MovieLens 32M, 1000 человек с 2019 года, NDCG@10: знакомство 0,040 → 0,046 (+0,006 [+0,002; +0,011]),
+#     + калибровка 0,036 → 0,040 (+0,003 [+0,001; +0,006]), без данных и импорт — в пределах шума;
+#     после знакомства фильмов с 2016 года 42% → 37%, до 2000 — 1% → 5%;
+#   десятка новичка без оценок (наборы жанров 19 тестировщиков): английских 81% → 92%, до 2000 года 16% → 12%,
+#     неанглийских с рейтингом от 8,3 — 36 → 15 из 190.
 POPULARITY_MIN_VOTES = 200_000  # поправка на число голосов во взвешенном рейтинге (этап 2)
 # MMR (разнообразие выдачи). Подбор на 30 пользователях MovieLens, пятёрка фильмов:
 #   без MMR — у 27% все 5 фильмов одного жанра, у 33% повтор режиссёра;
@@ -166,8 +180,15 @@ class Recommender:
         self.catalog = Catalog(self.movies.tconst.tolist())
         self.profiler = Profiler(self.catalog.ids, conn=conn)
         self.als = als
-        v, r = self.movies.votes.to_numpy(float), self.movies.rating.to_numpy(float)
+        # У фильмов, добавленных из проката TMDB, нет рейтинга IMDb (NULL). Один такой фильм делал среднее NaN —
+        # и популярность NaN у всего каталога: на сервере с октября её доля была нулевой у всех, а новичок без
+        # оценок получал фильмы по порядку IMDb-ID (немое кино 1920-х, затем малоизвестные). Нет голосов — 0,
+        # нет рейтинга — средний.
+        v = self.movies.votes.fillna(0).to_numpy(float)
+        r = self.movies.rating.to_numpy(float)
+        r = np.where(np.isnan(r), np.nanmean(r), r)
         self.popularity = (v * r + POPULARITY_MIN_VOTES * r.mean()) / (v + POPULARITY_MIN_VOTES)
+        self.fame = np.log10(v + 1)  # известность — для новичка (см. POPULARITY_PRIOR)
         people = pd.read_sql("SELECT tconst, nconst FROM movie_people", conn)
         people = people[people.tconst.isin(self.catalog.index)]
         self.people = people.assign(pos=self.catalog.positions(people.tconst))
@@ -184,7 +205,7 @@ class Recommender:
         """Долгосрочная оценка и её части — нужны и для выдачи, и для объяснения."""
         events = user_events(conn, user_id) if events is None else events
         if not events:
-            return {"total": _unit(self.popularity), "profile": None, "profile_score": None, "cf": None}
+            return {"total": _unit(self.fame), "profile": None, "profile_score": None, "cf": None}
         profile = self.profiler.vector(events)
         profile_score = _unit(self.profiler.scores(profile))
         parts = {"total": profile_score, "profile": profile, "profile_score": profile_score, "cf": None}
@@ -205,10 +226,10 @@ class Recommender:
             mix = CF_WEIGHT * cf + (1 - CF_WEIGHT) * profile_score
             unknown = UNKNOWN_POP * _unit(self.popularity) + (1 - UNKNOWN_POP) * profile_score
             parts.update(cf=cf, total=np.where(self.cf_known, mix, unknown))
-        # пока оценок мало, вкус известен плохо — подмешиваем популярность: её доля N0 / (n + N0)
+        # пока оценок мало, вкус известен плохо — подмешиваем известность: её доля N0 / (n + N0)
         if POPULARITY_PRIOR:
             share = POPULARITY_PRIOR / (len(ratings) + POPULARITY_PRIOR)
-            parts["total"] = (1 - share) * parts["total"] + share * _unit(self.popularity)
+            parts["total"] = (1 - share) * parts["total"] + share * _unit(self.fame)
         return parts
 
     def genre_match(self, genres: set[str]) -> np.ndarray:
